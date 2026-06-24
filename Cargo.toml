@@ -1,0 +1,35 @@
+[package]
+name = "mtype"
+version = "0.1.0"
+edition = "2021"
+description = "A fast terminal typing test for the command line. A Monkeytype style typing speed test (WPM) that runs in your terminal, offline, with no account."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/raminsharifi/mtype"
+homepage = "https://github.com/raminsharifi/mtype"
+readme = "README.md"
+keywords = ["typing", "typing-test", "monkeytype", "tui", "wpm"]
+categories = ["command-line-utilities", "games"]
+
+[[bin]]
+name = "mtype"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+directories = "5"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "1"
+ureq = { version = "2", features = ["json"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
