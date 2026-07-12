@@ -86,9 +86,9 @@ If your platform is not on the releases page yet, use Option 2.
 
 ### Option 2: build it from source
 
-This works on Linux, Intel Macs, and Apple Silicon. The command below installs
-Rust first if you do not already have it, then builds and installs mtype. It
-takes about a minute.
+This works on Linux and Apple Silicon Macs. The command below installs Rust
+first if you do not already have it, then builds and installs mtype. It takes
+about a minute.
 
 ```sh
 # skip this line if you already have Rust
