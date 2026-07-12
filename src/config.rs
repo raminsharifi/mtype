@@ -32,11 +32,12 @@ macro_rules! str_enum {
     };
 }
 
-str_enum!(Mode { Time => "time", Words => "words", Quote => "quote", Zen => "zen", Custom => "custom" }, default Time);
+str_enum!(Mode { Time => "time", Words => "words", Quote => "quote", Zen => "zen", Custom => "custom", Practice => "practice" }, default Time);
+str_enum!(PracticeMode { Missed => "missed", Slow => "slow", Mixed => "mixed" }, default Mixed);
 str_enum!(Difficulty { Normal => "normal", Expert => "expert", Master => "master" }, default Normal);
 str_enum!(StopOnError { Off => "off", Letter => "letter", Word => "word" }, default Off);
 str_enum!(ConfidenceMode { Off => "off", On => "on", Max => "max" }, default Off);
-str_enum!(IndicateTypos { Off => "off", Below => "below", Replace => "replace" }, default Off);
+str_enum!(IndicateTypos { Off => "off", Below => "below", Replace => "replace", Both => "both" }, default Off);
 str_enum!(CaretStyle { Off => "off", Default => "default", Block => "block", Outline => "outline", Underline => "underline" }, default Default);
 str_enum!(SmoothCaret { Off => "off", Slow => "slow", Medium => "medium", Fast => "fast" }, default Medium);
 str_enum!(HighlightMode { Off => "off", Letter => "letter", Word => "word", NextWord => "next_word" }, default Letter);
@@ -83,7 +84,15 @@ pub struct Config {
     pub time: u32,
     pub words: u32,
     pub quote_length: Vec<QuoteLengthBand>,
+    /// Selected quote for search/repeat; transient unless explicitly supplied.
+    #[serde(skip)]
+    pub quote_id: Option<u32>,
     pub custom_text: String,
+    pub practice_mode: PracticeMode,
+    pub practice_word_count: u32,
+    /// Generated from the analytics database for the current practice test.
+    #[serde(skip)]
+    pub practice_text: String,
 
     // modifiers
     pub punctuation: bool,
@@ -149,7 +158,11 @@ impl Default for Config {
             time: 30,
             words: 50,
             quote_length: vec![QuoteLengthBand::Medium],
+            quote_id: None,
             custom_text: String::new(),
+            practice_mode: PracticeMode::Mixed,
+            practice_word_count: 25,
+            practice_text: String::new(),
             punctuation: false,
             numbers: false,
             language: "english".to_string(),

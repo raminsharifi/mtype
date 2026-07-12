@@ -18,6 +18,8 @@ use crate::content::Quote;
 use crate::numbers::{calculate_wpm, consistency, round_to_2};
 use crate::wordgen::WordGenerator;
 use rand::rngs::StdRng;
+use serde::{Deserialize, Serialize};
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CharCounts {
@@ -39,11 +41,38 @@ impl std::ops::AddAssign for CharCounts {
 }
 
 /// Direct port of `utils/strings.ts::countChars`.
+fn lazy_normalize(value: &str) -> String {
+    value.nfd().filter(|ch| !is_combining_mark(*ch)).collect()
+}
+
+pub fn chars_equal(input: char, target: char, lazy: bool) -> bool {
+    input == target
+        || (lazy && lazy_normalize(&input.to_string()) == lazy_normalize(&target.to_string()))
+}
+
+fn words_equal(input: &str, target: &str, lazy: bool) -> bool {
+    input == target || (lazy && lazy_normalize(input) == lazy_normalize(target))
+}
+
+#[allow(dead_code)] // public scoring helper is exercised directly by unit tests
 pub fn count_chars(input: &str, target: &str, credit_partial: bool) -> CharCounts {
+    count_chars_with_lazy(input, target, credit_partial, false)
+}
+
+fn count_chars_with_lazy(
+    input: &str,
+    target: &str,
+    credit_partial: bool,
+    lazy: bool,
+) -> CharCounts {
     let inp: Vec<char> = input.chars().collect();
     let tgt: Vec<char> = target.chars().collect();
-    let word_correct = input == target;
-    let word_partial = target.starts_with(input);
+    let word_correct = words_equal(input, target, lazy);
+    let word_partial = if lazy {
+        lazy_normalize(target).starts_with(&lazy_normalize(input))
+    } else {
+        target.starts_with(input)
+    };
     let input_has_space = input.contains(' ');
     let mut c = CharCounts::default();
 
@@ -51,7 +80,7 @@ pub fn count_chars(input: &str, target: &str, credit_partial: bool) -> CharCount
         let ic = inp.get(i).copied();
         let tc = tgt.get(i).copied();
         match (ic, tc) {
-            (Some(a), Some(b)) if a == b => {
+            (Some(a), Some(b)) if chars_equal(a, b, lazy) => {
                 if b == ' ' && !word_correct {
                     c.extra += 1;
                 } else {
@@ -88,6 +117,45 @@ pub enum State {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputEventKind {
+    Character,
+    Commit,
+    Backspace,
+    WordBackspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputEvent {
+    /// Milliseconds since the first character of the test.
+    pub elapsed_ms: u64,
+    pub word_index: usize,
+    pub kind: InputEventKind,
+    /// Character for `Character`, otherwise absent.
+    pub value: Option<String>,
+    /// Whether the attempted character/commit matched its target.
+    pub correct: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WordOutcome {
+    pub word_index: usize,
+    pub target: String,
+    pub typed: String,
+    pub preceding_word: Option<String>,
+    pub duration_ms: u64,
+    pub burst_wpm: f64,
+    pub correct: bool,
+    /// True even when an error was corrected before the word was submitted.
+    pub had_error: bool,
+    pub incorrect_keystrokes: usize,
+    pub char_correct: usize,
+    pub char_incorrect: usize,
+    pub char_extra: usize,
+    pub char_missed: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct TestResult {
     pub wpm: f64,
@@ -110,6 +178,10 @@ pub struct TestResult {
     pub failed: bool,
     pub fail_reason: Option<String>,
     pub quote_source: Option<String>,
+    /// Final word-level attempts, in test order, for adaptive practice/ML.
+    pub word_outcomes: Vec<WordOutcome>,
+    /// Replayable input log, including corrected errors and backspaces.
+    pub input_events: Vec<InputEvent>,
 }
 
 struct Keystroke {
@@ -120,9 +192,11 @@ struct Keystroke {
     letter: bool,
 }
 
+#[derive(Debug, Clone)]
 struct CommittedWord {
     correct_word_chars: usize, // contribution to net WPM at commit time
     commit_ms: u128,
+    outcome: WordOutcome,
 }
 
 pub struct Engine {
@@ -143,6 +217,8 @@ pub struct Engine {
     keystrokes: Vec<Keystroke>,
     word_bursts: Vec<f64>,
     committed: Vec<CommittedWord>,
+    word_error_counts: Vec<usize>,
+    input_events: Vec<InputEvent>,
 
     pub quote: Option<Quote>,
 }
@@ -155,6 +231,7 @@ impl Engine {
         if typed.is_empty() {
             typed.push(String::new()); // zen / empty: always have an active slot
         }
+        let slot_count = typed.len();
         Engine {
             config,
             generator,
@@ -170,6 +247,8 @@ impl Engine {
             keystrokes: Vec::new(),
             word_bursts: Vec::new(),
             committed: Vec::new(),
+            word_error_counts: vec![0; slot_count],
+            input_events: Vec::new(),
             quote,
         }
     }
@@ -204,6 +283,63 @@ impl Engine {
         while self.typed.len() <= i {
             self.typed.push(String::new());
         }
+        while self.word_error_counts.len() <= i {
+            self.word_error_counts.push(0);
+        }
+    }
+
+    fn log_input(
+        &mut self,
+        now_ms: u128,
+        kind: InputEventKind,
+        value: Option<String>,
+        correct: Option<bool>,
+    ) {
+        let Some(start) = self.start_ms else { return };
+        self.input_events.push(InputEvent {
+            elapsed_ms: now_ms.saturating_sub(start).min(u64::MAX as u128) as u64,
+            word_index: self.active,
+            kind,
+            value,
+            correct,
+        });
+    }
+
+    fn make_word_outcome(
+        &self,
+        index: usize,
+        typed: &str,
+        target: &str,
+        finished_ms: u128,
+        include_commit: bool,
+    ) -> WordOutcome {
+        let cc = count_chars_with_lazy(typed, target, false, self.config.lazy_mode);
+        let duration_ms = finished_ms.saturating_sub(self.word_start_ms);
+        let raw_len = typed.chars().count() + usize::from(include_commit);
+        let burst_wpm = if duration_ms == 0 {
+            0.0
+        } else {
+            round_to_2(calculate_wpm(raw_len as f64, duration_ms as f64 / 1000.0))
+        };
+        let incorrect_keystrokes = self.word_error_counts.get(index).copied().unwrap_or(0);
+        let correct = typed == target;
+        WordOutcome {
+            word_index: index,
+            target: target.to_string(),
+            typed: typed.to_string(),
+            preceding_word: index
+                .checked_sub(1)
+                .and_then(|previous| self.target_words.get(previous).cloned()),
+            duration_ms: duration_ms.min(u64::MAX as u128) as u64,
+            burst_wpm,
+            correct,
+            had_error: !correct || incorrect_keystrokes > 0,
+            incorrect_keystrokes,
+            char_correct: cc.all_correct,
+            char_incorrect: cc.incorrect,
+            char_extra: cc.extra,
+            char_missed: cc.missed,
+        }
     }
 
     /// Top up the streaming word pool (time / zen / infinite words) so there are
@@ -220,6 +356,7 @@ impl Engine {
                 Some(w) => {
                     self.target_words.push(w);
                     self.typed.push(String::new());
+                    self.word_error_counts.push(0);
                 }
                 None => break,
             }
@@ -252,8 +389,18 @@ impl Engine {
         let correct = if self.is_zen() {
             true
         } else {
-            target_char == Some(c)
+            target_char.is_some_and(|target| chars_equal(c, target, self.config.lazy_mode))
         };
+        if !correct {
+            self.word_error_counts[self.active] =
+                self.word_error_counts[self.active].saturating_add(1);
+        }
+        self.log_input(
+            now_ms,
+            InputEventKind::Character,
+            Some(c.to_string()),
+            Some(correct),
+        );
 
         // hide extra letters: block typing past the word
         if self.config.hide_extra_letters && target_char.is_none() && !self.is_zen() {
@@ -306,9 +453,21 @@ impl Engine {
         }
         let last = self.target_words.len().saturating_sub(1);
         let is_last_word = self.active == last && !self.target_words.is_empty();
-        if matches!(self.config.mode, Mode::Words | Mode::Quote | Mode::Custom)
-            && is_last_word
-            && self.typed[self.active] == self.target(last)
+        let typed = self
+            .typed
+            .get(self.active)
+            .map(String::as_str)
+            .unwrap_or("");
+        let target = self.target(last);
+        let complete = words_equal(typed, target, self.config.lazy_mode)
+            || (self.config.mode == Mode::Words
+                && self.config.quick_end
+                && typed.chars().count() >= target.chars().count());
+        if matches!(
+            self.config.mode,
+            Mode::Words | Mode::Quote | Mode::Custom | Mode::Practice
+        ) && is_last_word
+            && complete
         {
             self.finish(now_ms);
         }
@@ -326,7 +485,8 @@ impl Engine {
         }
 
         let target = self.active_target();
-        let word_correct = current == target;
+        let word_correct = words_equal(&current, &target, self.config.lazy_mode);
+        self.log_input(now_ms, InputEventKind::Commit, None, Some(word_correct));
 
         // strict space / stop-on-error(word): if the word is wrong, a space does
         // not commit - it is rejected (and counts as an incorrect keystroke).
@@ -365,10 +525,12 @@ impl Engine {
         } else {
             format!("{target} ")
         };
-        let cc = count_chars(&input_ws, &target_ws, false);
+        let cc = count_chars_with_lazy(&input_ws, &target_ws, false, self.config.lazy_mode);
+        let outcome = self.make_word_outcome(self.active, &current, &target, now_ms, true);
         self.committed.push(CommittedWord {
             correct_word_chars: cc.correct_word,
             commit_ms: now_ms,
+            outcome,
         });
 
         // burst for this word: (chars+trigger)/5 / minutes
@@ -389,17 +551,29 @@ impl Engine {
         self.top_up();
 
         // finite finish: committed the last word
-        let finite_done = matches!(self.config.mode, Mode::Words | Mode::Quote | Mode::Custom)
-            && self.active >= self.target_words.len();
+        let finite_done = matches!(
+            self.config.mode,
+            Mode::Words | Mode::Quote | Mode::Custom | Mode::Practice
+        ) && self.active >= self.target_words.len();
         if finite_done {
             self.finish(now_ms);
         }
     }
 
-    pub fn backspace(&mut self, ctrl: bool, _now_ms: u128) {
+    pub fn backspace(&mut self, ctrl: bool, now_ms: u128) {
         if matches!(self.state, State::Finished | State::Failed) {
             return;
         }
+        self.log_input(
+            now_ms,
+            if ctrl {
+                InputEventKind::WordBackspace
+            } else {
+                InputEventKind::Backspace
+            },
+            None,
+            None,
+        );
         if self.config.confidence_mode == ConfidenceMode::Max {
             return; // no backspacing at all
         }
@@ -420,8 +594,11 @@ impl Engine {
             return; // can't go back to previous words
         }
         let prev = self.active - 1;
-        let prev_correct =
-            self.typed.get(prev).map(|s| s.as_str()).unwrap_or("") == self.target(prev);
+        let prev_correct = words_equal(
+            self.typed.get(prev).map(|s| s.as_str()).unwrap_or(""),
+            self.target(prev),
+            self.config.lazy_mode,
+        );
         if self.config.freedom_mode || !prev_correct {
             // pop the committed-word record for the word we're re-entering
             self.committed.pop();
@@ -552,7 +729,12 @@ impl Engine {
                 };
                 (format!("{input} "), t)
             };
-            acc += count_chars(&input, &target, is_last && credit_partial);
+            acc += count_chars_with_lazy(
+                &input,
+                &target,
+                is_last && credit_partial,
+                self.config.lazy_mode,
+            );
             if is_last {
                 break;
             }
@@ -595,6 +777,10 @@ impl Engine {
         self.word_bursts.last().copied().unwrap_or(0.0)
     }
 
+    pub fn live_elapsed_secs(&self, now_ms: u128) -> f64 {
+        self.elapsed_secs(now_ms)
+    }
+
     /// Remaining seconds (time mode) for the timer display.
     pub fn time_left(&self, now_ms: u128) -> Option<u32> {
         if self.config.mode != Mode::Time {
@@ -627,6 +813,7 @@ impl Engine {
                 .unwrap_or_default(),
             Mode::Zen => "zen".to_string(),
             Mode::Custom => "custom".to_string(),
+            Mode::Practice => self.config.practice_mode.as_str().to_string(),
         }
     }
 
@@ -645,6 +832,21 @@ impl Engine {
         let cons = consistency(&self.word_bursts);
 
         let (wpm_history, raw_history) = self.histories(duration);
+        let mut word_outcomes: Vec<WordOutcome> = self
+            .committed
+            .iter()
+            .map(|word| word.outcome.clone())
+            .collect();
+        if let Some(typed) = self.typed.get(self.active) {
+            if !typed.is_empty()
+                && word_outcomes
+                    .last()
+                    .is_none_or(|w| w.word_index != self.active)
+            {
+                let target = self.active_target();
+                word_outcomes.push(self.make_word_outcome(self.active, typed, &target, now, false));
+            }
+        }
 
         TestResult {
             wpm,
@@ -667,6 +869,8 @@ impl Engine {
             failed: self.state == State::Failed,
             fail_reason: self.fail_reason.clone(),
             quote_source: self.quote.as_ref().map(|q| q.source.clone()),
+            word_outcomes,
+            input_events: self.input_events.clone(),
         }
     }
 
@@ -714,6 +918,8 @@ mod tests {
         e.committed.clear();
         e.word_bursts.clear();
         e.keystrokes.clear();
+        e.word_error_counts = vec![0; e.typed.len()];
+        e.input_events.clear();
         e.state = State::BeforeStart;
         e.start_ms = None;
         e.finish_ms = None;
@@ -732,10 +938,11 @@ mod tests {
     }
 
     fn words_cfg(words: u32) -> Config {
-        let mut c = Config::default();
-        c.mode = Mode::Words;
-        c.words = words;
-        c
+        Config {
+            mode: Mode::Words,
+            words,
+            ..Config::default()
+        }
     }
 
     #[test]
@@ -856,9 +1063,11 @@ mod tests {
 
     #[test]
     fn time_mode_finishes_on_tick() {
-        let mut c = Config::default();
-        c.mode = Mode::Time;
-        c.time = 1;
+        let c = Config {
+            mode: Mode::Time,
+            time: 1,
+            ..Config::default()
+        };
         let mut e = engine_with(&["the", "cat", "dog", "run"], c);
         e.type_char('t', 0);
         e.type_char('h', 200);
@@ -872,8 +1081,10 @@ mod tests {
 
     #[test]
     fn zen_counts_everything_correct() {
-        let mut c = Config::default();
-        c.mode = Mode::Zen;
+        let c = Config {
+            mode: Mode::Zen,
+            ..Config::default()
+        };
         let mut e = engine_with(&[], c);
         e.type_char('a', 0);
         e.type_char('s', 100);

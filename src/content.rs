@@ -134,6 +134,29 @@ pub fn embedded_language_names() -> Vec<&'static str> {
     EMBEDDED_LANGUAGES.iter().map(|(n, _)| *n).collect()
 }
 
+/// Names of bundled and locally synced languages.
+pub fn available_language_names() -> Vec<String> {
+    let mut names = embedded_language_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(dir) = data_dir().map(|path| path.join("languages")) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for path in entries.flatten().map(|entry| entry.path()) {
+                if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                    if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                        if !names.iter().any(|name| name == stem) {
+                            names.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
 /// Whether a language is available offline (bundled or already synced to disk).
 pub fn language_available(name: &str) -> bool {
     EMBEDDED_LANGUAGES.iter().any(|(n, _)| *n == name) || local_file("languages", name).is_some()

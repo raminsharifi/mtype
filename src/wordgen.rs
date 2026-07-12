@@ -122,6 +122,51 @@ fn has_digit(word: &str) -> bool {
     word.chars().any(|c| c.is_ascii_digit())
 }
 
+fn british_spelling(word: &str) -> String {
+    match word {
+        "color" => "colour",
+        "colors" => "colours",
+        "favorite" => "favourite",
+        "favorites" => "favourites",
+        "honor" => "honour",
+        "honors" => "honours",
+        "labor" => "labour",
+        "neighbor" => "neighbour",
+        "neighbors" => "neighbours",
+        "center" => "centre",
+        "centers" => "centres",
+        "theater" => "theatre",
+        "theaters" => "theatres",
+        "meter" => "metre",
+        "meters" => "metres",
+        "liter" => "litre",
+        "liters" => "litres",
+        "organize" => "organise",
+        "organized" => "organised",
+        "organizing" => "organising",
+        "recognize" => "recognise",
+        "recognized" => "recognised",
+        "realize" => "realise",
+        "realized" => "realised",
+        "analyze" => "analyse",
+        "analyzed" => "analysed",
+        "behavior" => "behaviour",
+        "catalog" => "catalogue",
+        "dialog" => "dialogue",
+        "traveling" => "travelling",
+        "traveled" => "travelled",
+        "canceled" => "cancelled",
+        "canceling" => "cancelling",
+        "defense" => "defence",
+        "offense" => "offence",
+        "license" => "licence",
+        "practice" => "practise",
+        "gray" => "grey",
+        _ => return word.to_string(),
+    }
+    .to_string()
+}
+
 /// English-only port of `punctuateWord`. Each `else if` branch draws one fresh
 /// random and is taken on the first match, exactly as the JS `&&`-short-circuit
 /// chain does - so the resulting punctuation distribution matches Monkeytype.
@@ -201,6 +246,27 @@ impl WordGenerator {
                     .collect();
                 let bound = words.len().max(1);
                 (Source::Ordered(words), bound, None)
+            }
+            Mode::Practice => {
+                let words: Vec<String> = cfg
+                    .practice_text
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                if words.is_empty() {
+                    let lang = content::language(&cfg.language);
+                    let count = cfg.practice_word_count.max(1) as usize;
+                    let mut fallback = Vec::with_capacity(count);
+                    if !lang.words.is_empty() {
+                        for _ in 0..count {
+                            fallback.push(lang.words[rng.gen_range(0..lang.words.len())].clone());
+                        }
+                    }
+                    (Source::Ordered(fallback), count, None)
+                } else {
+                    let bound = words.len();
+                    (Source::Ordered(words), bound, None)
+                }
             }
         };
 
@@ -297,11 +363,14 @@ impl WordGenerator {
         }
         // lazy mode is a no-op for english (noLazyMode: true)
 
-        let mut out = word;
+        let mut out = if self.config.british_english {
+            british_spelling(&word)
+        } else {
+            word
+        };
         if punctuation {
             out = punctuate_word(rng, &self.prev1, &out, self.word_index, self.bound);
         }
-        // british english omitted (default off, data not vendored)
         if numbers && rng.gen::<f64>() < 0.1 {
             out = get_numbers(rng, 4);
         }
@@ -328,6 +397,18 @@ fn quote_language(lang: &str) -> String {
 
 fn pick_quote<R: Rng>(config: &Config, rng: &mut R) -> (Vec<String>, Option<Quote>) {
     let collection = content::quotes(&quote_language(&config.language));
+    if let Some(id) = config.quote_id {
+        if let Some(chosen) = collection
+            .quotes
+            .iter()
+            .find(|quote| quote.id == id)
+            .cloned()
+        {
+            let cleaned = clean_quote_text(&chosen.text);
+            let words = cleaned.split(' ').map(str::to_string).collect();
+            return (words, Some(chosen));
+        }
+    }
     // union of selected bands
     let mut pool: Vec<&Quote> = Vec::new();
     for band in &config.quote_length {
@@ -385,7 +466,7 @@ pub fn generate_test_words<R: Rng>(config: &Config, rng: &mut R) -> (Vec<String>
                 }
             }
         }
-        Mode::Quote | Mode::Custom => {
+        Mode::Quote | Mode::Custom | Mode::Practice => {
             while let Some(w) = gen.next(rng) {
                 words.push(w);
             }

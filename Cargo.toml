@@ -1,6 +1,6 @@
 [package]
 name = "mtype"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A fast terminal typing test for the command line. A Monkeytype style typing speed test (WPM) that runs in your terminal, offline, with no account."
 license = "GPL-3.0-or-later"
@@ -28,6 +28,8 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "1"
 ureq = { version = "2", features = ["json"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+unicode-normalization = "0.1"
 
 [profile.release]
 opt-level = 3

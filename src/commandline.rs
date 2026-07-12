@@ -4,7 +4,8 @@
 
 use crate::config::{
     CaretStyle, ConfidenceMode, Config, Difficulty, HighlightMode, IndicateTypos, IndicatorStyle,
-    Mode, PaceCaret, QuickRestart, QuoteLengthBand, SmoothCaret, StopOnError, TypingSpeedUnit,
+    Mode, PaceCaret, PracticeMode, QuickRestart, QuoteLengthBand, SmoothCaret, StopOnError,
+    TypingSpeedUnit,
 };
 
 #[derive(Debug, Clone)]
@@ -12,6 +13,7 @@ pub enum Action {
     SetMode(Mode),
     SetTime(u32),
     SetWords(u32),
+    SetPractice(PracticeMode, u32),
     SetDifficulty(Difficulty),
     SetQuoteLengthAll,
     SetQuoteLength(QuoteLengthBand),
@@ -25,13 +27,24 @@ pub enum Action {
     SetHighlight(HighlightMode),
     SetLiveSpeed(IndicatorStyle),
     SetLiveAcc(IndicatorStyle),
+    SetLiveBurst(IndicatorStyle),
     SetTimerStyle(IndicatorStyle),
     SetSpeedUnit(TypingSpeedUnit),
     SetPaceCaret(PaceCaret),
+    SetPaceSpeed(u32),
+    SetPaceStyle(CaretStyle),
+    SetMinWpm(Option<u32>),
+    SetMinAcc(Option<u32>),
+    SetMinBurst(Option<u32>),
+    SetMaxLineWidth(u32),
     SetTheme(String),
     SetLanguage(String),
     ToggleFunbox(String),
     ClearFunbox,
+    ViewStats,
+    EditCustomText,
+    SavePreset(String),
+    LoadPreset(String),
     Quit,
 }
 
@@ -46,6 +59,15 @@ pub enum BoolField {
     HideExtraLetters,
     StrictSpace,
     ResultSaving,
+    QuickEnd,
+    ColorfulMode,
+    FlipTestColors,
+    ShowAllLines,
+    StartGraphsAtZero,
+    AlwaysShowDecimalPlaces,
+    ShowOutOfFocusWarning,
+    CapsLockWarning,
+    RepeatQuotes,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +80,8 @@ pub struct Command {
 pub enum Outcome {
     Restart,
     StayAndRedraw,
+    OpenStats,
+    OpenCustomEditor,
     Quit,
 }
 
@@ -76,6 +100,12 @@ impl Action {
             Action::SetWords(w) => {
                 c.words = *w;
                 c.mode = Mode::Words;
+                Outcome::Restart
+            }
+            Action::SetPractice(mode, words) => {
+                c.mode = Mode::Practice;
+                c.practice_mode = *mode;
+                c.practice_word_count = *words;
                 Outcome::Restart
             }
             Action::SetDifficulty(d) => {
@@ -136,6 +166,10 @@ impl Action {
                 c.live_acc_style = *s;
                 Outcome::StayAndRedraw
             }
+            Action::SetLiveBurst(s) => {
+                c.live_burst_style = *s;
+                Outcome::StayAndRedraw
+            }
             Action::SetTimerStyle(s) => {
                 c.timer_style = *s;
                 Outcome::StayAndRedraw
@@ -147,6 +181,31 @@ impl Action {
             Action::SetPaceCaret(p) => {
                 c.pace_caret = *p;
                 Outcome::Restart
+            }
+            Action::SetPaceSpeed(speed) => {
+                c.pace_caret_custom_speed = *speed;
+                c.pace_caret = PaceCaret::Custom;
+                Outcome::Restart
+            }
+            Action::SetPaceStyle(style) => {
+                c.pace_caret_style = *style;
+                Outcome::StayAndRedraw
+            }
+            Action::SetMinWpm(value) => {
+                c.min_wpm = *value;
+                Outcome::Restart
+            }
+            Action::SetMinAcc(value) => {
+                c.min_acc = *value;
+                Outcome::Restart
+            }
+            Action::SetMinBurst(value) => {
+                c.min_burst = *value;
+                Outcome::Restart
+            }
+            Action::SetMaxLineWidth(value) => {
+                c.max_line_width = *value;
+                Outcome::StayAndRedraw
             }
             Action::SetTheme(name) => {
                 c.theme = name.clone();
@@ -167,6 +226,20 @@ impl Action {
             Action::ClearFunbox => {
                 c.funbox.clear();
                 Outcome::Restart
+            }
+            Action::ViewStats => Outcome::OpenStats,
+            Action::EditCustomText => Outcome::OpenCustomEditor,
+            Action::SavePreset(name) => {
+                let _ = crate::presets::save(name, c);
+                Outcome::StayAndRedraw
+            }
+            Action::LoadPreset(name) => {
+                if let Some(preset) = crate::presets::load(name) {
+                    *c = preset;
+                    Outcome::Restart
+                } else {
+                    Outcome::StayAndRedraw
+                }
             }
             Action::Quit => Outcome::Quit,
         }
@@ -212,6 +285,42 @@ fn toggle_field(c: &mut Config, f: BoolField) -> bool {
             c.result_saving = !c.result_saving;
             false
         }
+        BoolField::QuickEnd => {
+            c.quick_end = !c.quick_end;
+            true
+        }
+        BoolField::ColorfulMode => {
+            c.colorful_mode = !c.colorful_mode;
+            false
+        }
+        BoolField::FlipTestColors => {
+            c.flip_test_colors = !c.flip_test_colors;
+            false
+        }
+        BoolField::ShowAllLines => {
+            c.show_all_lines = !c.show_all_lines;
+            false
+        }
+        BoolField::StartGraphsAtZero => {
+            c.start_graphs_at_zero = !c.start_graphs_at_zero;
+            false
+        }
+        BoolField::AlwaysShowDecimalPlaces => {
+            c.always_show_decimal_places = !c.always_show_decimal_places;
+            false
+        }
+        BoolField::ShowOutOfFocusWarning => {
+            c.show_out_of_focus_warning = !c.show_out_of_focus_warning;
+            false
+        }
+        BoolField::CapsLockWarning => {
+            c.caps_lock_warning = !c.caps_lock_warning;
+            false
+        }
+        BoolField::RepeatQuotes => {
+            c.repeat_quotes = !c.repeat_quotes;
+            false
+        }
     }
 }
 
@@ -250,6 +359,22 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
             ""
         };
         push(format!("words > {w}{active}"), Action::SetWords(w));
+    }
+    for mode in PracticeMode::ALL {
+        for words in [10u32, 25, 50, 100] {
+            let active = if c.mode == Mode::Practice
+                && c.practice_mode == *mode
+                && c.practice_word_count == words
+            {
+                " •"
+            } else {
+                ""
+            };
+            push(
+                format!("practice > {mode} > {words} words{active}"),
+                Action::SetPractice(*mode, words),
+            );
+        }
     }
     // quote length
     push("quote length > all".to_string(), Action::SetQuoteLengthAll);
@@ -296,6 +421,42 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
         format!("result saving > {} (toggle)", on_off(c.result_saving)),
         Action::ToggleField(BoolField::ResultSaving),
     );
+    for (label, value, field) in [
+        ("quick end", c.quick_end, BoolField::QuickEnd),
+        ("colorful mode", c.colorful_mode, BoolField::ColorfulMode),
+        (
+            "flip test colors",
+            c.flip_test_colors,
+            BoolField::FlipTestColors,
+        ),
+        ("show all lines", c.show_all_lines, BoolField::ShowAllLines),
+        (
+            "start graphs at zero",
+            c.start_graphs_at_zero,
+            BoolField::StartGraphsAtZero,
+        ),
+        (
+            "always show decimals",
+            c.always_show_decimal_places,
+            BoolField::AlwaysShowDecimalPlaces,
+        ),
+        (
+            "out of focus warning",
+            c.show_out_of_focus_warning,
+            BoolField::ShowOutOfFocusWarning,
+        ),
+        (
+            "caps lock warning",
+            c.caps_lock_warning,
+            BoolField::CapsLockWarning,
+        ),
+        ("repeat quotes", c.repeat_quotes, BoolField::RepeatQuotes),
+    ] {
+        push(
+            format!("{label} > {} (toggle)", on_off(value)),
+            Action::ToggleField(field),
+        );
+    }
     // difficulty
     for d in Difficulty::ALL {
         let active = if c.difficulty == *d { " •" } else { "" };
@@ -321,6 +482,28 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
         push(
             format!("pace caret > {p}{active}"),
             Action::SetPaceCaret(*p),
+        );
+    }
+    for speed in [30u32, 60, 90, 120, 150, 200] {
+        let active = if c.pace_caret == PaceCaret::Custom && c.pace_caret_custom_speed == speed {
+            " •"
+        } else {
+            ""
+        };
+        push(
+            format!("pace caret speed > {speed} wpm{active}"),
+            Action::SetPaceSpeed(speed),
+        );
+    }
+    for style in CaretStyle::ALL {
+        let active = if c.pace_caret_style == *style {
+            " •"
+        } else {
+            ""
+        };
+        push(
+            format!("pace caret style > {style}{active}"),
+            Action::SetPaceStyle(*style),
         );
     }
     // behaviour
@@ -359,12 +542,39 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
             Action::SetHighlight(*h),
         );
     }
+    push("minimum wpm > off".to_string(), Action::SetMinWpm(None));
+    for value in [20u32, 40, 60, 80, 100, 120] {
+        push(
+            format!("minimum wpm > {value}"),
+            Action::SetMinWpm(Some(value)),
+        );
+    }
+    push(
+        "minimum accuracy > off".to_string(),
+        Action::SetMinAcc(None),
+    );
+    for value in [80u32, 90, 95, 98, 100] {
+        push(
+            format!("minimum accuracy > {value}%"),
+            Action::SetMinAcc(Some(value)),
+        );
+    }
+    push("minimum burst > off".to_string(), Action::SetMinBurst(None));
+    for value in [20u32, 40, 60, 80, 100, 120] {
+        push(
+            format!("minimum burst > {value} wpm"),
+            Action::SetMinBurst(Some(value)),
+        );
+    }
     // live readouts
     for s in IndicatorStyle::ALL {
         push(format!("live speed > {s}"), Action::SetLiveSpeed(*s));
     }
     for s in IndicatorStyle::ALL {
         push(format!("live acc > {s}"), Action::SetLiveAcc(*s));
+    }
+    for s in IndicatorStyle::ALL {
+        push(format!("live burst > {s}"), Action::SetLiveBurst(*s));
     }
     for s in IndicatorStyle::ALL {
         push(
@@ -383,21 +593,34 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
             Action::SetSpeedUnit(*u),
         );
     }
-    // language (bundled english variants - offline)
-    for name in crate::content::embedded_language_names() {
+    for width in [0u32, 40, 60, 80, 100, 120] {
+        let active = if c.max_line_width == width {
+            " •"
+        } else {
+            ""
+        };
+        let label = if width == 0 {
+            "full".to_string()
+        } else {
+            width.to_string()
+        };
+        push(
+            format!("max line width > {label}{active}"),
+            Action::SetMaxLineWidth(width),
+        );
+    }
+    // bundled and locally synced languages
+    for name in crate::content::available_language_names() {
         let active = if c.language == name { " •" } else { "" };
         push(
             format!("language > {name}{active}"),
-            Action::SetLanguage(name.to_string()),
+            Action::SetLanguage(name),
         );
     }
     // theme
     for name in crate::theme::Theme::available_names() {
-        let active = if c.theme == *name { " •" } else { "" };
-        push(
-            format!("theme > {name}{active}"),
-            Action::SetTheme(name.to_string()),
-        );
+        let active = if c.theme == name { " •" } else { "" };
+        push(format!("theme > {name}{active}"), Action::SetTheme(name));
     }
     // funbox
     push("funbox > clear all".to_string(), Action::ClearFunbox);
@@ -414,6 +637,18 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
         );
     }
     // quit
+    push("custom text > edit".to_string(), Action::EditCustomText);
+    for slot in 1..=5 {
+        let name = format!("slot {slot}");
+        push(
+            format!("preset > save > {name}"),
+            Action::SavePreset(name.clone()),
+        );
+        if crate::presets::names().iter().any(|preset| preset == &name) {
+            push(format!("preset > load > {name}"), Action::LoadPreset(name));
+        }
+    }
+    push("view stats / progress".to_string(), Action::ViewStats);
     push("quit mtype".to_string(), Action::Quit);
 
     v
@@ -589,8 +824,10 @@ mod tests {
 
     #[test]
     fn set_time_switches_mode() {
-        let mut c = Config::default();
-        c.mode = Mode::Words;
+        let mut c = Config {
+            mode: Mode::Words,
+            ..Config::default()
+        };
         Action::SetTime(60).apply(&mut c);
         assert_eq!(c.mode, Mode::Time);
         assert_eq!(c.time, 60);

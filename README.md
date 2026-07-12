@@ -35,13 +35,22 @@ machine instead.
   character breakdown
 - Personal best tracking saved locally, which is the offline replacement for the
   online account
+- A stats and progress page, like the Monkeytype account page but local: lifetime
+  numbers (tests, time typing, highest and average wpm, accuracy, consistency), a
+  wpm over time graph, an activity heatmap, and current and longest streaks
+- Adaptive practice for words you missed or typed slowly, powered by a local
+  SQLite analytics database that records word outcomes and replayable input
+  events for future local ML experiments
+- Input history and animated replay from the results screen
+- Portable JSON export/import and an explicit local-data reset command
+- An in-app custom-text editor and five offline configuration preset slots
 - Every English word list from Monkeytype bundled and ready offline: english,
   english_1k, english_5k, english_10k, english_25k, english_450k, and themed sets
   like english_medical, english_legal, and english_shakespearean
 - A command palette (press Esc) with fuzzy search to change any setting
 - Funbox modifiers such as rot13, ALL_CAPS, sponge case, morse, binary, hex, and
   gibberish
-- True color themes
+- Eight bundled true-color themes plus custom themes loaded from local TOML files
 
 ## Install
 
@@ -108,6 +117,8 @@ mtype --mode quote
 mtype --mode zen
 mtype --language english_10k --time 30
 mtype --custom "the quick brown fox jumps over the lazy dog"
+mtype practice mixed --words 25
+mtype data export mtype-backup.json
 ```
 
 ### Keys
@@ -119,10 +130,55 @@ mtype --custom "the quick brown fox jumps over the lazy dog"
 - Esc opens the command palette, where you can change any setting
 - Ctrl and C quits
 
-On the results screen, Tab or Enter starts a new test and Q quits.
+On the results screen, Tab or Enter starts a new test, S opens your stats, I
+shows word-by-word input history, W replays the test, M practices missed words,
+L practices slow words, Esc opens the command palette, and Q quits.
 
 If you want the text to look bigger, use your terminal's own font zoom (on macOS
 that is Cmd plus and Cmd minus, on most Linux terminals Ctrl plus and Ctrl minus).
+
+## Stats and progress
+
+mtype keeps a local equivalent of the Monkeytype account page. Every completed
+test is saved on your machine and used to show your progress over time. Open it
+in three ways:
+
+- press S on the results screen
+- search for "view stats" in the command palette (Esc)
+- run `mtype stats` to jump straight there
+
+You get lifetime numbers (tests completed and started, time typing, estimated
+words, highest and average wpm, accuracy, and consistency), a wpm over time graph
+so you can see if you are improving, an activity heatmap of the days you
+practiced, and your current and longest streak. Press Tab or Esc to go back to a
+test. None of this leaves your machine.
+
+## Adaptive practice and local analytics
+
+Every saved test also writes normalized test, word, and input-event records to a
+local SQLite database. Incorrect submissions and errors corrected before a word
+was submitted are both retained. This powers adaptive practice now and provides
+structured data for future local ML features.
+
+```sh
+mtype practice missed --words 25
+mtype practice slow --words 25
+mtype practice mixed --words 50
+```
+
+From a results screen, press M for missed-word practice or L for slow-word
+practice. If there is not enough history yet, practice mode falls back to words
+from the selected language.
+
+## Back up or reset local data
+
+Exports include results, word outcomes, and input replay events:
+
+```sh
+mtype data export mtype-backup.json
+mtype data import mtype-backup.json
+mtype data reset --yes
+```
 
 ## More languages and quotes
 
@@ -146,6 +202,10 @@ and on Linux under `~/.config/mtype/` and `~/.local/share/mtype/`:
 
 - `config.toml` holds your settings
 - `results.json` holds your test history and personal bests
+- `meta.json` holds the number of tests you have started
+- `analytics.sqlite3` holds normalized test, word, mistake, and input-event data
+- `presets.json` holds your offline configuration preset slots
+- `themes/*.toml` holds optional custom themes
 - `languages/` and `quotes/` hold anything you downloaded with `mtype sync`
 
 ## Develop

@@ -1,19 +1,30 @@
 //! Results screen: headline WPM/acc, a WPM-over-time chart, secondary stats,
 //! and the local personal-best banner.
 
-use crate::app::App;
+use crate::app::{App, ResultsView};
 use crate::config::TypingSpeedUnit;
-use crate::engine::TestResult;
+use crate::engine::{InputEventKind, TestResult};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Axis, Chart, Dataset, GraphType, Paragraph};
+use ratatui::widgets::{Axis, Chart, Dataset, GraphType, Paragraph, Wrap};
 use ratatui::Frame;
 
 pub fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     let t = &app.theme;
     let Some(r) = &app.result else { return };
+    match app.results_view {
+        ResultsView::InputHistory => {
+            render_input_history(app, frame, area, r);
+            return;
+        }
+        ResultsView::Replay => {
+            render_replay(app, frame, area, r);
+            return;
+        }
+        ResultsView::Summary => {}
+    }
 
     if area.width < 24 || area.height < 8 {
         // too small for the full layout - just the headline numbers
@@ -30,8 +41,10 @@ pub fn render_results(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     // proportional to the terminal: ~80% width, ~85% height (so the chart grows)
-    let width = ((area.width as u32 * 4 / 5) as u16).clamp(40, area.width.saturating_sub(2));
-    let height = ((area.height as u32 * 17 / 20) as u16).clamp(13, area.height.saturating_sub(1));
+    let max_width = area.width.saturating_sub(2);
+    let width = ((area.width as u32 * 4 / 5) as u16).clamp(max_width.min(40), max_width);
+    let max_height = area.height.saturating_sub(1);
+    let height = ((area.height as u32 * 17 / 20) as u16).clamp(max_height.min(13), max_height);
     let region = crate::ui::center_rect(area, width, height);
 
     let chunks = Layout::vertical([
@@ -50,12 +63,152 @@ pub fn render_results(app: &App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "tab / enter - next test    esc - quit",
+            "tab next  s stats  i input  w replay  m missed  l slow  esc menu  q quit",
             Style::default().fg(t.sub),
         ))
         .alignment(Alignment::Center),
         chunks[4],
     );
+}
+
+fn render_input_history(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
+    let width = area.width.saturating_sub(4).min(100);
+    let height = area.height.saturating_sub(2);
+    let region = crate::ui::center_rect(area, width, height);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "input history",
+            Style::default()
+                .fg(app.theme.main)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "    corrected errors are retained",
+            Style::default().fg(app.theme.sub),
+        ),
+    ])];
+    let available = region.height.saturating_sub(2) as usize;
+    for word in r.word_outcomes.iter().take(available) {
+        let marker = if word.had_error { "×" } else { "✓" };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{marker} {:>3}  ", word.word_index + 1),
+                Style::default().fg(if word.had_error {
+                    app.theme.error
+                } else {
+                    app.theme.sub
+                }),
+            ),
+            Span::styled(
+                format!("{:<18}", word.target),
+                Style::default().fg(app.theme.text),
+            ),
+            Span::styled(
+                format!(" typed {:<18}", word.typed),
+                Style::default().fg(if word.correct {
+                    app.theme.sub
+                } else {
+                    app.theme.error
+                }),
+            ),
+            Span::styled(
+                format!(
+                    "  {}ms  {:.0} burst  {} error keys",
+                    word.duration_ms, word.burst_wpm, word.incorrect_keystrokes
+                ),
+                Style::default().fg(app.theme.sub),
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        "esc - summary    m - practice missed    l - practice slow",
+        Style::default().fg(app.theme.sub),
+    )));
+    frame.render_widget(Paragraph::new(lines), region);
+}
+
+fn render_replay(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
+    let elapsed = app.replay_elapsed_ms();
+    let word_count = r
+        .word_outcomes
+        .iter()
+        .map(|word| word.word_index + 1)
+        .max()
+        .unwrap_or(1);
+    let mut typed = vec![String::new(); word_count];
+    for event in r
+        .input_events
+        .iter()
+        .take_while(|event| event.elapsed_ms <= elapsed)
+    {
+        if event.word_index >= typed.len() {
+            typed.resize(event.word_index + 1, String::new());
+        }
+        match event.kind {
+            InputEventKind::Character => {
+                if let Some(value) = &event.value {
+                    typed[event.word_index].push_str(value);
+                }
+            }
+            InputEventKind::Backspace => {
+                typed[event.word_index].pop();
+            }
+            InputEventKind::WordBackspace => typed[event.word_index].clear(),
+            InputEventKind::Commit => {}
+        }
+    }
+    let targets = r
+        .word_outcomes
+        .iter()
+        .map(|word| word.target.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let replayed = typed.join(" ");
+    let last_event = r
+        .input_events
+        .last()
+        .map(|event| event.elapsed_ms)
+        .unwrap_or(0);
+    let status = if elapsed >= last_event {
+        "complete"
+    } else {
+        "playing"
+    };
+    let region = crate::ui::center_rect(
+        area,
+        area.width.saturating_sub(6).min(100),
+        area.height.saturating_sub(4).min(14),
+    );
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "replay",
+                Style::default()
+                    .fg(app.theme.main)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "    {status}  {:.1}s / {:.1}s",
+                    elapsed as f64 / 1000.0,
+                    last_event as f64 / 1000.0
+                ),
+                Style::default().fg(app.theme.sub),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("target", Style::default().fg(app.theme.sub))),
+        Line::from(Span::styled(targets, Style::default().fg(app.theme.text))),
+        Line::from(""),
+        Line::from(Span::styled("typed", Style::default().fg(app.theme.sub))),
+        Line::from(Span::styled(replayed, Style::default().fg(app.theme.main))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "w - restart replay    esc - summary",
+            Style::default().fg(app.theme.sub),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), region);
 }
 
 fn render_status(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
@@ -127,15 +280,24 @@ fn render_chart(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
         .collect();
 
     let n = r.wpm_history.len() as f64;
-    let mut ymax = r
+    let all_values = r
         .raw_history
         .iter()
         .chain(r.wpm_history.iter())
-        .cloned()
-        .fold(0.0_f64, f64::max);
-    if app.config.start_graphs_at_zero {
-        ymax = ymax.max(10.0);
-    }
+        .copied()
+        .collect::<Vec<_>>();
+    let mut ymax = all_values.iter().copied().fold(0.0_f64, f64::max);
+    let ymin = if app.config.start_graphs_at_zero {
+        0.0
+    } else {
+        all_values
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+            .mul_add(0.9, 0.0)
+            .max(0.0)
+    };
+    ymax = ymax.max(ymin + 10.0);
     let ymax = (ymax * 1.1).ceil().max(10.0);
 
     let datasets = vec![
@@ -166,9 +328,9 @@ fn render_chart(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
         .y_axis(
             Axis::default()
                 .style(Style::default().fg(t.sub))
-                .bounds([0.0, ymax])
+                .bounds([ymin, ymax])
                 .labels([
-                    Span::raw("0"),
+                    Span::raw(format!("{}", ymin.round() as i64)),
                     Span::raw(format!("{}", ymax.round() as i64)),
                 ]),
         );
@@ -221,6 +383,7 @@ fn test_descriptor(r: &TestResult) -> String {
         Mode::Quote => "quote".to_string(),
         Mode::Zen => "zen".to_string(),
         Mode::Custom => "custom".to_string(),
+        Mode::Practice => format!("practice {}", r.mode2),
     };
     let mut extra = Vec::new();
     if r.punctuation {

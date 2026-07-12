@@ -7,7 +7,7 @@ use crate::engine::{Engine, State, TestResult};
 use crate::theme::Theme;
 use crate::tui::Tui;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::time::{Duration, Instant};
@@ -16,6 +16,15 @@ use std::time::{Duration, Instant};
 pub enum Screen {
     Test,
     Results,
+    Stats,
+    Editor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultsView {
+    Summary,
+    InputHistory,
+    Replay,
 }
 
 pub struct App {
@@ -26,14 +35,26 @@ pub struct App {
     pub result: Option<TestResult>,
     pub pb_info: crate::persistence::PbInfo,
     pub command_line: Option<CommandLine>,
+    /// Cached stats, computed when the stats screen is opened.
+    pub profile: Option<crate::persistence::Profile>,
+    /// Whether the current test has already been counted as "started".
+    started_counted: bool,
     pub epoch: Instant,
     pub should_quit: bool,
+    pub pace_wpm: Option<f64>,
+    pub focused: bool,
+    pub caps_lock: bool,
+    pub results_view: ResultsView,
+    pub replay_epoch: Option<Instant>,
+    pub editor_text: String,
 }
 
 impl App {
-    pub fn new(config: Config) -> App {
+    pub fn new(mut config: Config) -> App {
+        refresh_practice_text(&mut config);
         let theme = Theme::by_name(&config.theme);
         let engine = Engine::new(config.clone(), StdRng::from_entropy());
+        let pace_wpm = crate::persistence::pace_wpm(&config);
         App {
             config,
             theme,
@@ -42,8 +63,16 @@ impl App {
             result: None,
             pb_info: crate::persistence::PbInfo::default(),
             command_line: None,
+            profile: None,
+            started_counted: false,
             epoch: Instant::now(),
             should_quit: false,
+            pace_wpm,
+            focused: true,
+            caps_lock: false,
+            results_view: ResultsView::Summary,
+            replay_epoch: None,
+            editor_text: String::new(),
         }
     }
 
@@ -53,10 +82,41 @@ impl App {
 
     /// Start a fresh test with the current config.
     pub fn restart(&mut self) {
+        self.config.quote_id = if self.config.mode == Mode::Quote && self.config.repeat_quotes {
+            self.engine.quote.as_ref().map(|quote| quote.id)
+        } else {
+            None
+        };
+        refresh_practice_text(&mut self.config);
+        self.pace_wpm = crate::persistence::pace_wpm(&self.config);
         self.engine = Engine::new(self.config.clone(), StdRng::from_entropy());
         self.epoch = Instant::now();
         self.result = None;
+        self.results_view = ResultsView::Summary;
+        self.replay_epoch = None;
+        self.started_counted = false;
         self.screen = Screen::Test;
+    }
+
+    /// Compute lifetime stats and switch to the stats screen.
+    pub fn open_stats(&mut self) {
+        // wall-clock now, in ms since the unix epoch, for streak/activity math
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        self.profile = Some(crate::persistence::compute_profile(now));
+        self.screen = Screen::Stats;
+    }
+
+    /// Count the current test as started the first time typing begins.
+    fn maybe_count_start(&mut self) {
+        if !self.started_counted && self.engine.state() == State::Running {
+            self.started_counted = true;
+            if self.config.result_saving {
+                crate::persistence::increment_started_tests();
+            }
+        }
     }
 
     pub fn run(&mut self, terminal: &mut Tui) -> Result<()> {
@@ -65,10 +125,20 @@ impl App {
             terminal.draw(|frame| crate::ui::render(self, frame))?;
 
             if event::poll(tick)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.on_key(key);
+                match event::read()? {
+                    Event::Key(key) => {
+                        self.caps_lock = key.state.contains(KeyEventState::CAPS_LOCK);
+                        if key.kind == KeyEventKind::Press {
+                            self.on_key(key);
+                        }
                     }
+                    Event::FocusGained => self.focused = true,
+                    Event::FocusLost => self.focused = false,
+                    Event::Paste(text) if self.screen == Screen::Editor => {
+                        self.editor_text
+                            .push_str(&text.replace(['\r', '\n', '\t'], " "));
+                    }
+                    _ => {}
                 }
             }
 
@@ -93,6 +163,8 @@ impl App {
                 self.config.result_saving,
             );
             self.result = Some(result);
+            self.results_view = ResultsView::Summary;
+            self.replay_epoch = None;
             self.screen = Screen::Results;
         }
     }
@@ -116,6 +188,8 @@ impl App {
         match self.screen {
             Screen::Test => self.on_key_test(key, ctrl, alt),
             Screen::Results => self.on_key_results(key),
+            Screen::Stats => self.on_key_stats(key),
+            Screen::Editor => self.on_key_editor(key, ctrl),
         }
     }
 
@@ -153,6 +227,11 @@ impl App {
             Outcome::StayAndRedraw => {
                 let _ = self.config.save();
                 self.theme = Theme::by_name(&self.config.theme);
+            }
+            Outcome::OpenStats => self.open_stats(),
+            Outcome::OpenCustomEditor => {
+                self.editor_text = self.config.custom_text.clone();
+                self.screen = Screen::Editor;
             }
             Outcome::Quit => self.should_quit = true,
         }
@@ -197,17 +276,94 @@ impl App {
             }
             _ => {}
         }
+        self.maybe_count_start();
         self.sync_finish();
     }
 
     fn on_key_results(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Tab | KeyCode::Enter => self.restart(),
+            KeyCode::Char('s') => self.open_stats(),
+            KeyCode::Char('i') => {
+                self.results_view = if self.results_view == ResultsView::InputHistory {
+                    ResultsView::Summary
+                } else {
+                    ResultsView::InputHistory
+                };
+            }
+            KeyCode::Char('w') => {
+                self.results_view = ResultsView::Replay;
+                self.replay_epoch = Some(Instant::now());
+            }
+            KeyCode::Char('m') => self.start_practice(crate::config::PracticeMode::Missed),
+            KeyCode::Char('l') => self.start_practice(crate::config::PracticeMode::Slow),
+            KeyCode::Esc if self.results_view != ResultsView::Summary => {
+                self.results_view = ResultsView::Summary;
+                self.replay_epoch = None;
+            }
             KeyCode::Esc => self.open_command_line(),
             KeyCode::Char('q') => self.should_quit = true,
             _ => {}
         }
     }
+
+    fn start_practice(&mut self, mode: crate::config::PracticeMode) {
+        self.config.mode = Mode::Practice;
+        self.config.practice_mode = mode;
+        self.restart();
+    }
+
+    pub fn replay_elapsed_ms(&self) -> u64 {
+        self.replay_epoch
+            .map(|epoch| epoch.elapsed().as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or(0)
+    }
+
+    fn on_key_stats(&mut self, key: KeyEvent) {
+        match key.code {
+            // go back to a fresh test
+            KeyCode::Tab | KeyCode::Enter | KeyCode::Esc => {
+                self.profile = None;
+                self.restart();
+            }
+            KeyCode::Char('q') => self.should_quit = true,
+            _ => {}
+        }
+    }
+
+    fn on_key_editor(&mut self, key: KeyEvent, ctrl: bool) {
+        match key.code {
+            KeyCode::Char('s') if ctrl => {
+                self.config.custom_text = self.editor_text.trim().to_string();
+                self.config.mode = Mode::Custom;
+                let _ = self.config.save();
+                self.restart();
+            }
+            KeyCode::Esc => {
+                self.editor_text.clear();
+                self.screen = Screen::Test;
+            }
+            KeyCode::Backspace => {
+                self.editor_text.pop();
+            }
+            KeyCode::Enter | KeyCode::Tab => self.editor_text.push(' '),
+            KeyCode::Char(character) if !ctrl => self.editor_text.push(character),
+            _ => {}
+        }
+    }
+}
+
+fn refresh_practice_text(config: &mut Config) {
+    if config.mode != Mode::Practice {
+        return;
+    }
+    config.practice_text = crate::analytics::practice_words(
+        &config.language,
+        config.practice_mode,
+        config.practice_word_count as usize,
+    )
+    .unwrap_or_default()
+    .join(" ");
 }
 
 #[cfg(test)]
@@ -234,9 +390,11 @@ mod tests {
 
     #[test]
     fn renders_test_screen_without_panicking() {
-        let mut cfg = Config::default();
-        cfg.mode = Mode::Words;
-        cfg.words = 10;
+        let cfg = Config {
+            mode: Mode::Words,
+            words: 10,
+            ..Config::default()
+        };
         let mut app = App::new(cfg);
         // type the first target word's first two chars
         let first = app.engine.target_words[0].clone();
@@ -274,9 +432,11 @@ mod tests {
 
     #[test]
     fn caret_at_word_end_does_not_shift_line() {
-        let mut cfg = Config::default();
-        cfg.mode = Mode::Words;
-        cfg.words = 10;
+        let cfg = Config {
+            mode: Mode::Words,
+            words: 10,
+            ..Config::default()
+        };
         let mut app = App::new(cfg);
         let w0 = app.engine.target_words[0].clone();
 
@@ -300,9 +460,11 @@ mod tests {
 
     #[test]
     fn completing_words_test_shows_results() {
-        let mut cfg = Config::default();
-        cfg.mode = Mode::Words;
-        cfg.words = 3;
+        let cfg = Config {
+            mode: Mode::Words,
+            words: 3,
+            ..Config::default()
+        };
         let mut app = App::new(cfg);
         let targets = app.engine.target_words.clone();
         for (i, w) in targets.iter().enumerate() {
@@ -369,6 +531,77 @@ mod tests {
         app.on_key(key(KeyCode::Enter)); // execute toggle
         assert!(app.command_line.is_none());
         assert!(app.config.punctuation);
+    }
+
+    #[test]
+    fn stats_screen_renders_sections() {
+        let mut app = App::new(Config::default());
+        let mut p = crate::persistence::Profile {
+            completed: 5,
+            started: 7,
+            time_typing_sec: 600.0,
+            estimated_words: 900,
+            highest_wpm: 120.0,
+            avg_wpm: 90.0,
+            avg_wpm_last10: 95.0,
+            highest_acc: 99.0,
+            avg_acc: 96.0,
+            today: 100,
+            current_streak: 3,
+            max_streak: 8,
+            wpm_history: vec![70.0, 85.0, 90.0, 100.0, 120.0],
+            ..Default::default()
+        };
+        p.activity = vec![crate::persistence::DayActivity { day: 100, count: 4 }];
+        app.profile = Some(p);
+        app.screen = Screen::Stats;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| crate::ui::render(&app, f)).unwrap();
+        let text = buffer_text(&terminal);
+        for needle in [
+            "your stats",
+            "time typing",
+            "highest wpm", // left column
+            "highest acc", // right column
+            "average consistency",
+            "activity",
+            "back to test",
+        ] {
+            assert!(
+                text.contains(needle),
+                "stats screen missing {needle:?}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn results_s_opens_stats_and_back_returns_to_test() {
+        let mut app = App::new(Config::default());
+        app.screen = Screen::Results;
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.screen, Screen::Stats);
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.screen, Screen::Test);
+    }
+
+    #[test]
+    fn stats_screen_handles_small_terminals() {
+        let mut app = App::new(Config::default());
+        app.profile = Some(crate::persistence::Profile {
+            completed: 2,
+            started: 2,
+            wpm_history: vec![70.0, 80.0],
+            ..Default::default()
+        });
+        app.screen = Screen::Stats;
+
+        for (width, height) in [(1, 1), (29, 9), (30, 10), (40, 20), (80, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::render(&app, frame))
+                .unwrap();
+        }
     }
 
     #[test]
