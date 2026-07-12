@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Private local typing performance dashboard for mtype">
+  <title>mtype growth dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body class="is-loading">
+  <a class="skip-link" href="#main">Skip to dashboard</a>
+  <div class="ambient" aria-hidden="true"><span></span><span></span><span></span></div>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="mtype dashboard home">
+      <span class="brand-mark">m</span>
+      <span>mtype</span>
+    </a>
+    <nav aria-label="Dashboard sections">
+      <a href="#progress">Progress</a>
+      <a href="#insights">Insights</a>
+      <a href="#words">Wrong words</a>
+      <a href="#patterns">Patterns</a>
+    </nav>
+    <button class="refresh-button" id="refreshButton" type="button">Refresh data</button>
+  </header>
+
+  <div class="loading-shell" id="loadingShell" role="status" aria-label="Reading local typing data">
+    <div class="loading-copy">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="loading-chart"><i></i></div>
+    <div class="loading-metrics"><span></span><span></span><span></span><span></span><span></span></div>
+  </div>
+
+  <main id="main" aria-busy="true">
+    <section class="hero reveal" id="overview">
+      <div class="hero-copy">
+        <p class="eyebrow">Private performance studio</p>
+        <h1 id="heroTitle">Reading your rhythm.</h1>
+        <p id="heroSummary">Turning saved tests into a clear next move.</p>
+        <div class="hero-status">
+          <span id="dataFreshness">Loading local data</span>
+          <span>Nothing leaves this machine</span>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <canvas id="heroCanvas" role="img" aria-label="Recent typing speed trajectory"></canvas>
+        <div class="hero-number">
+          <span id="recentWpm" data-count="0">0</span>
+          <small>recent wpm</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="metric-rail reveal" aria-label="Lifetime typing metrics">
+      <article><span data-metric="highestWpm">0</span><small>personal best</small></article>
+      <article><span data-metric="averageAccuracy">0%</span><small>average accuracy</small></article>
+      <article><span data-metric="testsCompleted">0</span><small>tests completed</small></article>
+      <article><span data-metric="timeTypingSec">0h</span><small>focused typing</small></article>
+      <article><span data-metric="currentStreak">0</span><small>day streak</small></article>
+    </section>
+
+    <section class="progress-section reveal" id="progress">
+      <div class="section-heading">
+        <div>
+          <h2>Progress, without the noise</h2>
+          <p>Net speed, raw potential, and accuracy across your real test history.</p>
+        </div>
+        <div class="filters" aria-label="Chart filters">
+          <div class="segmented" id="rangeFilter">
+            <button type="button" data-range="30">30 tests</button>
+            <button type="button" data-range="90">90 tests</button>
+            <button class="active" type="button" data-range="all">All</button>
+          </div>
+          <label>
+            <span>Test mode</span>
+            <select id="modeFilter"><option value="all">All modes</option></select>
+          </label>
+        </div>
+      </div>
+      <div class="chart-stage">
+        <canvas id="progressCanvas" role="img" aria-label="Typing speed and accuracy over time"></canvas>
+        <div class="chart-tooltip" id="chartTooltip" hidden></div>
+        <div class="chart-empty" id="progressEmpty" hidden>
+          <strong>Two tests reveal a line.</strong>
+          <span>Complete another saved test to unlock trend analysis.</span>
+        </div>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-net">Net wpm</span>
+        <span class="legend-raw">Raw wpm</span>
+        <span class="legend-accuracy">Accuracy</span>
+        <strong id="trendLabel">Building trend</strong>
+      </div>
+    </section>
+
+    <section class="insight-section reveal" id="insights">
+      <div class="insight-lead">
+        <h2>Your next gains are specific.</h2>
+        <p>The dashboard looks for constraints you can act on, not just records you can admire.</p>
+        <div class="practice-command" id="practiceCommand">
+          <code>mtype practice mixed --words 25</code>
+          <button type="button" id="copyPractice">Copy</button>
+        </div>
+      </div>
+      <div class="insight-stack" id="insightStack" aria-live="polite"></div>
+    </section>
+
+    <section class="words-section reveal" id="words">
+      <div class="section-heading words-heading">
+        <div>
+          <h2>Words that break your flow</h2>
+          <p>Corrected errors count too. The goal is clean muscle memory, not merely a correct final submission.</p>
+        </div>
+        <label class="search-field">
+          <span>Find a word</span>
+          <input id="wordSearch" type="search" placeholder="Search your history" autocomplete="off">
+        </label>
+      </div>
+      <div class="word-layout">
+        <div class="word-focus" id="wordFocus">
+          <p>Highest friction</p>
+          <strong id="focusWord">Waiting</strong>
+          <div class="focus-stats">
+            <span><b id="focusRate">0%</b> error rate</span>
+            <span><b id="focusAttempts">0</b> attempts</span>
+          </div>
+          <p id="focusVariant">Your most common substitution will appear here.</p>
+        </div>
+        <div class="word-table-wrap">
+          <table>
+            <thead><tr><th>Word</th><th>Errors</th><th>Rate</th><th>Burst</th><th>Last seen</th></tr></thead>
+            <tbody id="wrongWordsBody"></tbody>
+          </table>
+          <div class="table-empty" id="wordsEmpty" hidden>
+            <strong>No word-level mistakes recorded yet.</strong>
+            <span>New saved tests will populate corrected and submitted errors here.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="patterns-section reveal" id="patterns">
+      <div class="pattern-intro">
+        <h2>Technique leaves fingerprints.</h2>
+        <p>Character swaps, slow words, mode differences, and practice cadence expose where speed is leaking.</p>
+        <div class="leak-number"><span data-metric="speedLeak">0</span><small>wpm raw-to-net gap</small></div>
+      </div>
+      <article class="confusion-panel">
+        <h3>Character confusions</h3>
+        <p>Expected key compared with what arrived.</p>
+        <div id="confusionGrid" class="confusion-grid"></div>
+        <div class="panel-empty" id="confusionEmpty" hidden>No repeated key confusion yet.</div>
+      </article>
+      <article class="slow-panel">
+        <h3>Slow but accurate</h3>
+        <p>Clean words with the lowest average burst.</p>
+        <div id="slowWords" class="slow-list"></div>
+        <div class="panel-empty" id="slowEmpty" hidden>More clean word timings are needed.</div>
+      </article>
+      <article class="mode-panel">
+        <h3>Mode performance</h3>
+        <p>Your pace changes with the shape of the test.</p>
+        <div id="modeList" class="mode-list"></div>
+      </article>
+    </section>
+
+    <section class="activity-section reveal" id="activity">
+      <div>
+        <h2>Consistency compounds.</h2>
+        <p id="activityCopy">Your practice rhythm will appear across the last year.</p>
+      </div>
+      <div class="heatmap-wrap">
+        <div class="heatmap-months" id="heatmapMonths" aria-hidden="true"></div>
+        <div class="heatmap" id="heatmap" role="img" aria-label="Typing activity over the last year"></div>
+        <div class="heatmap-legend"><span>Less</span><i></i><i></i><i></i><i></i><i></i><span>More</span></div>
+      </div>
+    </section>
+
+    <section class="empty-state" id="globalEmpty" hidden>
+      <h2>Complete one test. See everything change.</h2>
+      <p>The dashboard is ready. Saved tests create trends, insights, activity, and word-level practice recommendations.</p>
+      <code>mtype</code>
+    </section>
+
+    <section class="error-state" id="errorState" hidden>
+      <h2>The dashboard could not read local data.</h2>
+      <p id="errorMessage">Refresh to try again.</p>
+      <button type="button" id="retryButton">Try again</button>
+    </section>
+  </main>
+
+  <footer>
+    <span>mtype growth dashboard</span>
+    <span>Localhost only. Close the serving process to stop.</span>
+  </footer>
+  <script src="/dashboard.js" defer></script>
+</body>
+</html>

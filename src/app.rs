@@ -205,12 +205,33 @@ impl App {
             KeyCode::Esc => self.command_line = None,
             KeyCode::Up => cl.move_selection(-1),
             KeyCode::Down => cl.move_selection(1),
+            KeyCode::Tab => cl.next_tab(1),
+            KeyCode::BackTab => cl.next_tab(-1),
+            KeyCode::Left => {
+                if !cl.close_group() {
+                    cl.next_tab(-1);
+                }
+            }
+            KeyCode::Right => cl.next_tab(1),
             KeyCode::Backspace => cl.pop_char(),
             KeyCode::Enter => {
-                if let Some(action) = cl.current_action() {
-                    self.command_line = None;
+                if let Some(action) = cl.activate() {
+                    let closes_workspace = action.closes_config_workspace();
+                    if closes_workspace {
+                        self.command_line = None;
+                    }
                     self.execute(action);
+                    if !closes_workspace {
+                        if let Some(command_line) = self.command_line.as_mut() {
+                            command_line.refresh(&self.config);
+                        }
+                    }
                 }
+            }
+            KeyCode::Char('j') if ctrl => cl.move_selection(1),
+            KeyCode::Char('k') if ctrl => cl.move_selection(-1),
+            KeyCode::Char(c @ '1'..='6') if !ctrl && cl.at_root() => {
+                cl.select_tab(c.to_digit(10).unwrap_or(1) as usize - 1);
             }
             KeyCode::Char(c) if !ctrl => cl.push_char(c),
             _ => {}
@@ -521,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn command_line_toggles_config_and_closes() {
+    fn command_line_toggles_config_and_stays_open() {
         let mut app = App::new(Config::default());
         assert!(!app.config.punctuation);
         app.on_key(key(KeyCode::Esc)); // open
@@ -529,8 +550,69 @@ mod tests {
             app.on_key(key(KeyCode::Char(c)));
         }
         app.on_key(key(KeyCode::Enter)); // execute toggle
-        assert!(app.command_line.is_none());
+        let command_line = app.command_line.as_ref().expect("config should stay open");
+        assert_eq!(command_line.query, "punctuation");
+        assert!(command_line
+            .commands
+            .iter()
+            .any(|command| command.label == "punctuation > on (toggle)"));
         assert!(app.config.punctuation);
+    }
+
+    #[test]
+    fn config_workspace_renders_current_snapshot_and_tabs() {
+        let mut app = App::new(Config::default());
+        app.on_key(key(KeyCode::Esc));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| crate::ui::render(&app, f)).unwrap();
+        let text = buffer_text(&terminal);
+        for needle in [
+            "Current",
+            "Behavior",
+            "Appearance",
+            "current configuration",
+            "serika_dark",
+            "result saving",
+        ] {
+            assert!(
+                text.contains(needle),
+                "config workspace missing {needle:?}:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_workspace_drills_into_a_setting() {
+        let mut app = App::new(Config::default());
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Char('2'))); // Test tab
+        app.on_key(key(KeyCode::Enter)); // mode setting
+        assert_eq!(
+            app.command_line.as_ref().and_then(|line| line.group),
+            Some("mode")
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(90, 26)).unwrap();
+        terminal.draw(|f| crate::ui::render(&app, f)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("Test / mode"),
+            "missing drill-down header:\n{text}"
+        );
+        assert!(
+            text.contains("current: time"),
+            "missing active value:\n{text}"
+        );
+    }
+
+    #[test]
+    fn config_workspace_handles_small_terminals() {
+        for (width, height) in [(1, 1), (27, 8), (28, 9), (48, 14), (80, 24)] {
+            let mut app = App::new(Config::default());
+            app.on_key(key(KeyCode::Esc));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| crate::ui::render(&app, f)).unwrap();
+        }
     }
 
     #[test]

@@ -127,12 +127,17 @@ mtype data export mtype-backup.json
 - Space moves to the next word
 - Backspace deletes a letter, Ctrl and Backspace deletes a word
 - Tab restarts the test
-- Esc opens the command palette, where you can change any setting
+- Esc opens the tabbed config workspace, where you can review or change any setting
 - Ctrl and C quits
 
 On the results screen, Tab or Enter starts a new test, S opens your stats, I
 shows word-by-word input history, W replays the test, M practices missed words,
-L practices slow words, Esc opens the command palette, and Q quits.
+L practices slow words, Esc opens the config workspace, and Q quits.
+
+Inside config, Tab and Shift+Tab (or Left and Right) switch sections, number
+keys 1 through 6 jump directly to a tab, Up and Down move, and Enter opens or
+applies a setting. Type to fuzzy-search the active tab; typing from Current
+searches every setting. Backspace clears the filter or returns from a setting.
 
 If you want the text to look bigger, use your terminal's own font zoom (on macOS
 that is Cmd plus and Cmd minus, on most Linux terminals Ctrl plus and Ctrl minus).
@@ -144,14 +149,27 @@ test is saved on your machine and used to show your progress over time. Open it
 in three ways:
 
 - press S on the results screen
-- search for "view stats" in the command palette (Esc)
+- search for "view stats" in the config workspace (Esc)
 - run `mtype stats` to jump straight there
+- run `mtype stats serve` to open the animated browser dashboard
 
 You get lifetime numbers (tests completed and started, time typing, estimated
 words, highest and average wpm, accuracy, and consistency), a wpm over time graph
 so you can see if you are improving, an activity heatmap of the days you
 practiced, and your current and longest streak. Press Tab or Esc to go back to a
 test. None of this leaves your machine.
+
+The browser dashboard adds interactive net and raw speed charts, accuracy
+overlays, mode comparisons, a one-year activity view, character confusions,
+slow words, wrong-word search, and concrete training recommendations. It binds
+only to localhost, reads the same local history and SQLite database as the TUI,
+and includes all of its assets in the `mtype` binary. Stop it with Ctrl and C.
+
+```sh
+mtype stats serve
+mtype stats serve --port 5050
+mtype stats serve --no-open
+```
 
 ## Adaptive practice and local analytics
 

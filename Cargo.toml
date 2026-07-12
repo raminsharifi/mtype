@@ -1,6 +1,6 @@
 [package]
 name = "mtype"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A fast terminal typing test for the command line. A Monkeytype style typing speed test (WPM) that runs in your terminal, offline, with no account."
 license = "GPL-3.0-or-later"

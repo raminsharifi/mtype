@@ -8,6 +8,38 @@ use crate::config::{
     TypingSpeedUnit,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigTab {
+    Current,
+    Test,
+    Behavior,
+    Appearance,
+    Feedback,
+    System,
+}
+
+impl ConfigTab {
+    pub const ALL: &'static [ConfigTab] = &[
+        ConfigTab::Current,
+        ConfigTab::Test,
+        ConfigTab::Behavior,
+        ConfigTab::Appearance,
+        ConfigTab::Feedback,
+        ConfigTab::System,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            ConfigTab::Current => "Current",
+            ConfigTab::Test => "Test",
+            ConfigTab::Behavior => "Behavior",
+            ConfigTab::Appearance => "Appearance",
+            ConfigTab::Feedback => "Feedback",
+            ConfigTab::System => "System",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Action {
     SetMode(Mode),
@@ -86,6 +118,131 @@ pub enum Outcome {
 }
 
 impl Action {
+    pub fn closes_config_workspace(&self) -> bool {
+        matches!(
+            self,
+            Action::ViewStats | Action::EditCustomText | Action::Quit
+        )
+    }
+
+    fn tab(&self) -> ConfigTab {
+        match self {
+            Action::SetMode(_)
+            | Action::SetTime(_)
+            | Action::SetWords(_)
+            | Action::SetPractice(_, _)
+            | Action::SetDifficulty(_)
+            | Action::SetQuoteLengthAll
+            | Action::SetQuoteLength(_)
+            | Action::SetLanguage(_)
+            | Action::ToggleField(BoolField::Punctuation | BoolField::Numbers) => ConfigTab::Test,
+            Action::SetStopOnError(_)
+            | Action::SetConfidence(_)
+            | Action::SetQuickRestart(_)
+            | Action::ToggleFunbox(_)
+            | Action::ClearFunbox
+            | Action::ToggleField(
+                BoolField::FreedomMode
+                | BoolField::BlindMode
+                | BoolField::LazyMode
+                | BoolField::BritishEnglish
+                | BoolField::HideExtraLetters
+                | BoolField::StrictSpace
+                | BoolField::QuickEnd
+                | BoolField::RepeatQuotes,
+            ) => ConfigTab::Behavior,
+            Action::SetCaret(_)
+            | Action::SetSmoothCaret(_)
+            | Action::SetIndicateTypos(_)
+            | Action::SetHighlight(_)
+            | Action::SetMaxLineWidth(_)
+            | Action::SetTheme(_)
+            | Action::ToggleField(
+                BoolField::ColorfulMode | BoolField::FlipTestColors | BoolField::ShowAllLines,
+            ) => ConfigTab::Appearance,
+            Action::SetLiveSpeed(_)
+            | Action::SetLiveAcc(_)
+            | Action::SetLiveBurst(_)
+            | Action::SetTimerStyle(_)
+            | Action::SetSpeedUnit(_)
+            | Action::SetPaceCaret(_)
+            | Action::SetPaceSpeed(_)
+            | Action::SetPaceStyle(_)
+            | Action::SetMinWpm(_)
+            | Action::SetMinAcc(_)
+            | Action::SetMinBurst(_)
+            | Action::ToggleField(
+                BoolField::ResultSaving
+                | BoolField::StartGraphsAtZero
+                | BoolField::AlwaysShowDecimalPlaces
+                | BoolField::ShowOutOfFocusWarning
+                | BoolField::CapsLockWarning,
+            ) => ConfigTab::Feedback,
+            Action::ViewStats
+            | Action::EditCustomText
+            | Action::SavePreset(_)
+            | Action::LoadPreset(_)
+            | Action::Quit => ConfigTab::System,
+        }
+    }
+
+    fn group(&self) -> &'static str {
+        match self {
+            Action::SetMode(_) => "mode",
+            Action::SetTime(_) => "time",
+            Action::SetWords(_) => "words",
+            Action::SetPractice(_, _) => "practice",
+            Action::SetDifficulty(_) => "difficulty",
+            Action::SetQuoteLengthAll | Action::SetQuoteLength(_) => "quote length",
+            Action::ToggleField(field) => match field {
+                BoolField::Punctuation => "punctuation",
+                BoolField::Numbers => "numbers",
+                BoolField::FreedomMode => "freedom mode",
+                BoolField::BlindMode => "blind mode",
+                BoolField::LazyMode => "lazy mode",
+                BoolField::BritishEnglish => "british english",
+                BoolField::HideExtraLetters => "hide extra letters",
+                BoolField::StrictSpace => "strict space",
+                BoolField::ResultSaving => "result saving",
+                BoolField::QuickEnd => "quick end",
+                BoolField::ColorfulMode => "colorful mode",
+                BoolField::FlipTestColors => "flip test colors",
+                BoolField::ShowAllLines => "show all lines",
+                BoolField::StartGraphsAtZero => "start graphs at zero",
+                BoolField::AlwaysShowDecimalPlaces => "always show decimals",
+                BoolField::ShowOutOfFocusWarning => "out of focus warning",
+                BoolField::CapsLockWarning => "caps lock warning",
+                BoolField::RepeatQuotes => "repeat quotes",
+            },
+            Action::SetCaret(_) => "caret style",
+            Action::SetSmoothCaret(_) => "smooth caret",
+            Action::SetStopOnError(_) => "stop on error",
+            Action::SetConfidence(_) => "confidence mode",
+            Action::SetQuickRestart(_) => "quick restart",
+            Action::SetIndicateTypos(_) => "indicate typos",
+            Action::SetHighlight(_) => "highlight mode",
+            Action::SetLiveSpeed(_) => "live speed",
+            Action::SetLiveAcc(_) => "live accuracy",
+            Action::SetLiveBurst(_) => "live burst",
+            Action::SetTimerStyle(_) => "timer / progress",
+            Action::SetSpeedUnit(_) => "speed unit",
+            Action::SetPaceCaret(_) => "pace caret",
+            Action::SetPaceSpeed(_) => "pace speed",
+            Action::SetPaceStyle(_) => "pace style",
+            Action::SetMinWpm(_) => "minimum wpm",
+            Action::SetMinAcc(_) => "minimum accuracy",
+            Action::SetMinBurst(_) => "minimum burst",
+            Action::SetMaxLineWidth(_) => "max line width",
+            Action::SetTheme(_) => "theme",
+            Action::SetLanguage(_) => "language",
+            Action::ToggleFunbox(_) | Action::ClearFunbox => "funbox",
+            Action::ViewStats => "stats / progress",
+            Action::EditCustomText => "custom text",
+            Action::SavePreset(_) | Action::LoadPreset(_) => "presets",
+            Action::Quit => "quit mtype",
+        }
+    }
+
     pub fn apply(&self, c: &mut Config) -> Outcome {
         match self {
             Action::SetMode(m) => {
@@ -377,9 +534,26 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
         }
     }
     // quote length
-    push("quote length > all".to_string(), Action::SetQuoteLengthAll);
+    let all_quote_lengths = QuoteLengthBand::ALL
+        .iter()
+        .all(|band| c.quote_length.contains(band));
+    push(
+        format!(
+            "quote length > all{}",
+            if all_quote_lengths { " •" } else { "" }
+        ),
+        Action::SetQuoteLengthAll,
+    );
     for b in QuoteLengthBand::ALL {
-        push(format!("quote length > {b}"), Action::SetQuoteLength(*b));
+        let active = if c.quote_length.len() == 1 && c.quote_length.contains(b) {
+            " •"
+        } else {
+            ""
+        };
+        push(
+            format!("quote length > {b}{active}"),
+            Action::SetQuoteLength(*b),
+        );
     }
     // toggles
     push(
@@ -542,43 +716,75 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
             Action::SetHighlight(*h),
         );
     }
-    push("minimum wpm > off".to_string(), Action::SetMinWpm(None));
+    push(
+        format!(
+            "minimum wpm > off{}",
+            if c.min_wpm.is_none() { " •" } else { "" }
+        ),
+        Action::SetMinWpm(None),
+    );
     for value in [20u32, 40, 60, 80, 100, 120] {
+        let active = if c.min_wpm == Some(value) { " •" } else { "" };
         push(
-            format!("minimum wpm > {value}"),
+            format!("minimum wpm > {value}{active}"),
             Action::SetMinWpm(Some(value)),
         );
     }
     push(
-        "minimum accuracy > off".to_string(),
+        format!(
+            "minimum accuracy > off{}",
+            if c.min_acc.is_none() { " •" } else { "" }
+        ),
         Action::SetMinAcc(None),
     );
     for value in [80u32, 90, 95, 98, 100] {
+        let active = if c.min_acc == Some(value) { " •" } else { "" };
         push(
-            format!("minimum accuracy > {value}%"),
+            format!("minimum accuracy > {value}%{active}"),
             Action::SetMinAcc(Some(value)),
         );
     }
-    push("minimum burst > off".to_string(), Action::SetMinBurst(None));
+    push(
+        format!(
+            "minimum burst > off{}",
+            if c.min_burst.is_none() { " •" } else { "" }
+        ),
+        Action::SetMinBurst(None),
+    );
     for value in [20u32, 40, 60, 80, 100, 120] {
+        let active = if c.min_burst == Some(value) {
+            " •"
+        } else {
+            ""
+        };
         push(
-            format!("minimum burst > {value} wpm"),
+            format!("minimum burst > {value} wpm{active}"),
             Action::SetMinBurst(Some(value)),
         );
     }
     // live readouts
     for s in IndicatorStyle::ALL {
-        push(format!("live speed > {s}"), Action::SetLiveSpeed(*s));
-    }
-    for s in IndicatorStyle::ALL {
-        push(format!("live acc > {s}"), Action::SetLiveAcc(*s));
-    }
-    for s in IndicatorStyle::ALL {
-        push(format!("live burst > {s}"), Action::SetLiveBurst(*s));
-    }
-    for s in IndicatorStyle::ALL {
+        let active = if c.live_speed_style == *s { " •" } else { "" };
         push(
-            format!("timer/progress style > {s}"),
+            format!("live speed > {s}{active}"),
+            Action::SetLiveSpeed(*s),
+        );
+    }
+    for s in IndicatorStyle::ALL {
+        let active = if c.live_acc_style == *s { " •" } else { "" };
+        push(format!("live acc > {s}{active}"), Action::SetLiveAcc(*s));
+    }
+    for s in IndicatorStyle::ALL {
+        let active = if c.live_burst_style == *s { " •" } else { "" };
+        push(
+            format!("live burst > {s}{active}"),
+            Action::SetLiveBurst(*s),
+        );
+    }
+    for s in IndicatorStyle::ALL {
+        let active = if c.timer_style == *s { " •" } else { "" };
+        push(
+            format!("timer/progress style > {s}{active}"),
             Action::SetTimerStyle(*s),
         );
     }
@@ -681,6 +887,8 @@ pub struct CommandLine {
     pub query: String,
     pub selected: usize,
     pub commands: Vec<Command>,
+    pub tab: ConfigTab,
+    pub group: Option<&'static str>,
 }
 
 impl CommandLine {
@@ -689,20 +897,101 @@ impl CommandLine {
             query: String::new(),
             selected: 0,
             commands: all_commands(config),
+            tab: ConfigTab::Current,
+            group: None,
         }
     }
 
     pub fn filtered(&self) -> Vec<usize> {
+        if self.query.is_empty() && self.group.is_none() {
+            return Vec::new();
+        }
         self.commands
             .iter()
             .enumerate()
+            .filter(|(_, cmd)| self.tab == ConfigTab::Current || cmd.action.tab() == self.tab)
+            .filter(|(_, cmd)| self.group.is_none_or(|group| cmd.action.group() == group))
             .filter(|(_, cmd)| fuzzy_match(&cmd.label, &self.query))
             .map(|(i, _)| i)
             .collect()
     }
 
+    pub fn groups(&self) -> Vec<&'static str> {
+        let groups: &[&'static str] = match self.tab {
+            ConfigTab::Current => &[],
+            ConfigTab::Test => &[
+                "mode",
+                "time",
+                "words",
+                "practice",
+                "quote length",
+                "language",
+                "difficulty",
+                "punctuation",
+                "numbers",
+            ],
+            ConfigTab::Behavior => &[
+                "stop on error",
+                "confidence mode",
+                "strict space",
+                "quick restart",
+                "quick end",
+                "freedom mode",
+                "blind mode",
+                "lazy mode",
+                "british english",
+                "hide extra letters",
+                "repeat quotes",
+                "funbox",
+            ],
+            ConfigTab::Appearance => &[
+                "theme",
+                "caret style",
+                "smooth caret",
+                "highlight mode",
+                "indicate typos",
+                "max line width",
+                "show all lines",
+                "colorful mode",
+                "flip test colors",
+            ],
+            ConfigTab::Feedback => &[
+                "timer / progress",
+                "live speed",
+                "live accuracy",
+                "live burst",
+                "speed unit",
+                "pace caret",
+                "pace speed",
+                "pace style",
+                "minimum wpm",
+                "minimum accuracy",
+                "minimum burst",
+                "result saving",
+                "start graphs at zero",
+                "always show decimals",
+                "out of focus warning",
+                "caps lock warning",
+            ],
+            ConfigTab::System => &["stats / progress", "custom text", "presets", "quit mtype"],
+        };
+        groups.to_vec()
+    }
+
     pub fn move_selection(&mut self, delta: i32) {
-        let len = self.filtered().len();
+        if self.tab == ConfigTab::Current && self.query.is_empty() {
+            self.selected = if delta < 0 {
+                self.selected.saturating_sub(delta.unsigned_abs() as usize)
+            } else {
+                self.selected.saturating_add(delta as usize).min(64)
+            };
+            return;
+        }
+        let len = if self.query.is_empty() && self.group.is_none() {
+            self.groups().len()
+        } else {
+            self.filtered().len()
+        };
         if len == 0 {
             self.selected = 0;
             return;
@@ -713,13 +1002,86 @@ impl CommandLine {
     }
 
     pub fn push_char(&mut self, ch: char) {
+        self.group = None;
         self.query.push(ch);
         self.selected = 0;
     }
 
     pub fn pop_char(&mut self) {
-        self.query.pop();
+        if self.query.is_empty() {
+            self.group = None;
+        } else {
+            self.query.pop();
+        }
         self.selected = 0;
+    }
+
+    pub fn next_tab(&mut self, delta: i32) {
+        let current = ConfigTab::ALL
+            .iter()
+            .position(|tab| *tab == self.tab)
+            .unwrap_or(0) as i32;
+        let next = (current + delta).rem_euclid(ConfigTab::ALL.len() as i32) as usize;
+        self.select_tab(next);
+    }
+
+    pub fn select_tab(&mut self, index: usize) {
+        if let Some(tab) = ConfigTab::ALL.get(index) {
+            self.tab = *tab;
+            self.query.clear();
+            self.group = None;
+            self.selected = 0;
+        }
+    }
+
+    pub fn at_root(&self) -> bool {
+        self.query.is_empty() && self.group.is_none()
+    }
+
+    pub fn close_group(&mut self) -> bool {
+        if self.group.is_some() {
+            self.group = None;
+            self.selected = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Open the selected setting or return the selected concrete action.
+    pub fn activate(&mut self) -> Option<Action> {
+        if self.tab == ConfigTab::Current && self.query.is_empty() {
+            return None;
+        }
+        if self.query.is_empty() && self.group.is_none() {
+            let group = self.groups().get(self.selected).copied()?;
+            let mut actions = self
+                .commands
+                .iter()
+                .filter(|command| command.action.tab() == self.tab)
+                .filter(|command| command.action.group() == group)
+                .map(|command| command.action.clone());
+            let first = actions.next()?;
+            if actions.next().is_none() {
+                return Some(first);
+            }
+            self.group = Some(group);
+            self.selected = 0;
+            return None;
+        }
+        self.current_action()
+    }
+
+    pub fn refresh(&mut self, config: &Config) {
+        self.commands = all_commands(config);
+        let len = if self.tab == ConfigTab::Current && self.query.is_empty() {
+            65
+        } else if self.query.is_empty() && self.group.is_none() {
+            self.groups().len()
+        } else {
+            self.filtered().len()
+        };
+        self.selected = self.selected.min(len.saturating_sub(1));
     }
 
     /// The command currently selected, if any.
@@ -730,21 +1092,192 @@ impl CommandLine {
     }
 }
 
-/// Render the palette as a centered overlay on top of the current screen.
+fn option_value(value: Option<u32>, suffix: &str) -> String {
+    value
+        .map(|number| format!("{number}{suffix}"))
+        .unwrap_or_else(|| "off".to_string())
+}
+
+fn current_value(group: &str, config: &Config) -> String {
+    match group {
+        "mode" => config.mode.to_string(),
+        "time" => format!("{} seconds", config.time),
+        "words" => config.words.to_string(),
+        "practice" => format!(
+            "{} · {} words",
+            config.practice_mode, config.practice_word_count
+        ),
+        "quote length" => config
+            .quote_length
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        "punctuation" => on_off(config.punctuation).to_string(),
+        "numbers" => on_off(config.numbers).to_string(),
+        "difficulty" => config.difficulty.to_string(),
+        "language" => config.language.clone(),
+        "freedom mode" => on_off(config.freedom_mode).to_string(),
+        "blind mode" => on_off(config.blind_mode).to_string(),
+        "lazy mode" => on_off(config.lazy_mode).to_string(),
+        "british english" => on_off(config.british_english).to_string(),
+        "hide extra letters" => on_off(config.hide_extra_letters).to_string(),
+        "strict space" => on_off(config.strict_space).to_string(),
+        "quick end" => on_off(config.quick_end).to_string(),
+        "stop on error" => config.stop_on_error.to_string(),
+        "confidence mode" => config.confidence_mode.to_string(),
+        "quick restart" => config.quick_restart.to_string(),
+        "repeat quotes" => on_off(config.repeat_quotes).to_string(),
+        "funbox" => {
+            if config.funbox.is_empty() {
+                "off".to_string()
+            } else {
+                config.funbox.join(", ")
+            }
+        }
+        "caret style" => config.caret_style.to_string(),
+        "smooth caret" => config.smooth_caret.to_string(),
+        "indicate typos" => config.indicate_typos.to_string(),
+        "highlight mode" => config.highlight_mode.to_string(),
+        "max line width" => {
+            if config.max_line_width == 0 {
+                "full".to_string()
+            } else {
+                config.max_line_width.to_string()
+            }
+        }
+        "theme" => config.theme.clone(),
+        "colorful mode" => on_off(config.colorful_mode).to_string(),
+        "flip test colors" => on_off(config.flip_test_colors).to_string(),
+        "show all lines" => on_off(config.show_all_lines).to_string(),
+        "result saving" => on_off(config.result_saving).to_string(),
+        "pace caret" => config.pace_caret.to_string(),
+        "pace speed" => format!("{} wpm", config.pace_caret_custom_speed),
+        "pace style" => config.pace_caret_style.to_string(),
+        "minimum wpm" => option_value(config.min_wpm, " wpm"),
+        "minimum accuracy" => option_value(config.min_acc, "%"),
+        "minimum burst" => option_value(config.min_burst, " wpm"),
+        "live speed" => config.live_speed_style.to_string(),
+        "live accuracy" => config.live_acc_style.to_string(),
+        "live burst" => config.live_burst_style.to_string(),
+        "timer / progress" => config.timer_style.to_string(),
+        "speed unit" => config.typing_speed_unit.to_string(),
+        "start graphs at zero" => on_off(config.start_graphs_at_zero).to_string(),
+        "always show decimals" => on_off(config.always_show_decimal_places).to_string(),
+        "out of focus warning" => on_off(config.show_out_of_focus_warning).to_string(),
+        "caps lock warning" => on_off(config.caps_lock_warning).to_string(),
+        "custom text" => {
+            if config.custom_text.is_empty() {
+                "empty".to_string()
+            } else {
+                format!("{} chars", config.custom_text.chars().count())
+            }
+        }
+        "presets" => format!("{} saved", crate::presets::names().len()),
+        "stats / progress" => "open".to_string(),
+        "quit mtype" => "exit".to_string(),
+        _ => String::new(),
+    }
+}
+
+struct SummarySection {
+    title: &'static str,
+    rows: Vec<(&'static str, String)>,
+}
+
+fn current_sections(config: &Config) -> Vec<SummarySection> {
+    let values = |groups: &[&'static str]| {
+        groups
+            .iter()
+            .map(|group| (*group, current_value(group, config)))
+            .collect()
+    };
+    vec![
+        SummarySection {
+            title: "Test",
+            rows: values(&[
+                "mode",
+                "time",
+                "words",
+                "practice",
+                "quote length",
+                "punctuation",
+                "numbers",
+                "difficulty",
+                "language",
+                "custom text",
+            ]),
+        },
+        SummarySection {
+            title: "Behavior",
+            rows: values(&[
+                "freedom mode",
+                "blind mode",
+                "lazy mode",
+                "british english",
+                "hide extra letters",
+                "strict space",
+                "quick end",
+                "stop on error",
+                "confidence mode",
+                "quick restart",
+                "repeat quotes",
+                "funbox",
+            ]),
+        },
+        SummarySection {
+            title: "Appearance",
+            rows: values(&[
+                "theme",
+                "caret style",
+                "smooth caret",
+                "indicate typos",
+                "highlight mode",
+                "max line width",
+                "colorful mode",
+                "flip test colors",
+                "show all lines",
+            ]),
+        },
+        SummarySection {
+            title: "Feedback",
+            rows: values(&[
+                "timer / progress",
+                "live speed",
+                "live accuracy",
+                "live burst",
+                "speed unit",
+                "pace caret",
+                "pace speed",
+                "pace style",
+                "minimum wpm",
+                "minimum accuracy",
+                "minimum burst",
+                "start graphs at zero",
+                "always show decimals",
+                "out of focus warning",
+                "caps lock warning",
+                "result saving",
+            ]),
+        },
+    ]
+}
+
+/// Render the config workspace as a large lazy.nvim-inspired overlay.
 pub fn render(app: &crate::app::App, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
-    use ratatui::layout::Rect;
+    use ratatui::layout::{Constraint, Layout};
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+    use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs};
 
     let Some(cl) = app.command_line.as_ref() else {
         return;
     };
     let t = &app.theme;
 
-    let width = 56u16.min(area.width.saturating_sub(2));
-    let height = 18u16.min(area.height.saturating_sub(2));
-    if width < 10 || height < 5 {
+    let width = 112u16.min(area.width.saturating_sub(2));
+    let height = 34u16.min(area.height.saturating_sub(2));
+    if width < 28 || height < 9 {
         return;
     }
     let rect = crate::ui::center_rect(area, width, height);
@@ -752,53 +1285,324 @@ pub fn render(app: &crate::app::App, frame: &mut ratatui::Frame, area: ratatui::
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(t.main))
+        .title(Line::from(vec![
+            Span::styled(
+                " mtype ",
+                Style::default()
+                    .fg(t.bg)
+                    .bg(t.main)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" config ", Style::default().fg(t.text)),
+        ]))
+        .border_style(Style::default().fg(t.sub))
         .style(Style::default().bg(t.sub_alt));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
+    let rows = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
 
-    // query line
-    let query_rect = Rect::new(inner.x, inner.y, inner.width, 1);
+    let compact = rows[0].width < 70;
+    let titles = ConfigTab::ALL.iter().enumerate().map(|(index, tab)| {
+        let label = if compact {
+            match tab {
+                ConfigTab::Current => "Cur",
+                ConfigTab::Test => "Test",
+                ConfigTab::Behavior => "Beh",
+                ConfigTab::Appearance => "Look",
+                ConfigTab::Feedback => "Feed",
+                ConfigTab::System => "Sys",
+            }
+        } else {
+            tab.label()
+        };
+        Line::from(format!(" {} {label} ", index + 1))
+    });
+    let active = ConfigTab::ALL
+        .iter()
+        .position(|tab| *tab == cl.tab)
+        .unwrap_or(0);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("> ", Style::default().fg(t.main)),
-            Span::styled(cl.query.clone(), Style::default().fg(t.text)),
-            Span::styled("▏", Style::default().fg(t.caret)),
-        ])),
-        query_rect,
+        Tabs::new(titles)
+            .select(active)
+            .divider(Span::styled("│", Style::default().fg(t.sub)))
+            .style(Style::default().fg(t.sub))
+            .highlight_style(Style::default().fg(t.main).add_modifier(Modifier::BOLD)),
+        rows[0],
     );
 
-    // list
     let filtered = cl.filtered();
-    let list_height = inner.height.saturating_sub(1) as usize;
-    if list_height == 0 {
-        return;
+    let context = if !cl.query.is_empty() {
+        Line::from(vec![
+            Span::styled(" filter › ", Style::default().fg(t.main)),
+            Span::styled(cl.query.clone(), Style::default().fg(t.text)),
+            Span::styled("▏", Style::default().fg(t.caret)),
+            Span::styled(
+                format!("   {} matches", filtered.len()),
+                Style::default().fg(t.sub),
+            ),
+        ])
+    } else if let Some(group) = cl.group {
+        Line::from(vec![
+            Span::styled(format!(" {} ", cl.tab.label()), Style::default().fg(t.sub)),
+            Span::styled("/", Style::default().fg(t.sub)),
+            Span::styled(
+                format!(" {group}"),
+                Style::default().fg(t.main).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   current: {}", current_value(group, &app.config)),
+                Style::default().fg(t.text),
+            ),
+            Span::styled("   backspace returns", Style::default().fg(t.sub)),
+        ])
+    } else if cl.tab == ConfigTab::Current {
+        Line::from(vec![
+            Span::styled(
+                " current configuration",
+                Style::default().fg(t.main).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "   type anywhere to search every setting",
+                Style::default().fg(t.sub),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!(" {}", cl.tab.label()),
+                Style::default().fg(t.main).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "   {} settings   enter opens   type to filter",
+                    cl.groups().len()
+                ),
+                Style::default().fg(t.sub),
+            ),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(context).style(Style::default().bg(t.bg)),
+        rows[1],
+    );
+
+    if cl.tab == ConfigTab::Current && cl.query.is_empty() {
+        render_current(app, frame, rows[2]);
+    } else if cl.query.is_empty() && cl.group.is_none() {
+        render_groups(app, frame, rows[2]);
+    } else {
+        render_commands(app, frame, rows[2], &filtered);
     }
-    let sel = cl.selected.min(filtered.len().saturating_sub(1));
-    // scroll window so the selection is visible
-    let start = if sel >= list_height {
-        sel - list_height + 1
+
+    let footer = if rows[3].width >= 76 {
+        " tab/shift+tab switch   ↑↓ move   enter open/apply   backspace back   esc close "
+    } else {
+        " tab switch  ↑↓ move  enter select  esc close "
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(footer, Style::default().fg(t.sub)))),
+        rows[3],
+    );
+}
+
+fn render_current(app: &crate::app::App, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    use ratatui::layout::{Constraint, Layout};
+    let sections = current_sections(&app.config);
+    if area.width >= 96 {
+        let columns = Layout::horizontal([
+            Constraint::Percentage(33),
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+        ])
+        .spacing(1)
+        .split(area);
+        render_summary_column(app, frame, columns[0], &sections[..1]);
+        render_summary_column(app, frame, columns[1], &sections[1..3]);
+        render_summary_column(app, frame, columns[2], &sections[3..]);
+    } else if area.width >= 68 {
+        let columns = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .spacing(2)
+            .split(area);
+        render_summary_column(app, frame, columns[0], &sections[..2]);
+        render_summary_column(app, frame, columns[1], &sections[2..]);
+    } else {
+        render_summary_column(app, frame, area, &sections);
+    }
+}
+
+fn render_summary_column(
+    app: &crate::app::App,
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    sections: &[SummarySection],
+) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+    let mut lines = Vec::new();
+    for (section_index, section) in sections.iter().enumerate() {
+        if section_index > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {}", section.title),
+            Style::default()
+                .fg(app.theme.main)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (label, value) in &section.rows {
+            let label_width = (area.width as usize / 2).clamp(12, 22);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {label:<label_width$}"),
+                    Style::default().fg(app.theme.sub),
+                ),
+                Span::styled(value.clone(), Style::default().fg(app.theme.text)),
+            ]));
+        }
+    }
+    let start = app
+        .command_line
+        .as_ref()
+        .map(|command_line| command_line.selected)
+        .unwrap_or(0)
+        .min(lines.len().saturating_sub(1));
+    let visible = lines
+        .into_iter()
+        .skip(start)
+        .take(area.height as usize)
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(visible), area);
+}
+
+fn selected_window(selected: usize, length: usize, height: usize) -> (usize, usize) {
+    if length == 0 || height == 0 {
+        return (0, 0);
+    }
+    let selected = selected.min(length - 1);
+    let start = if selected >= height {
+        selected - height + 1
     } else {
         0
     };
+    (selected, start)
+}
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (row, &cmd_idx) in filtered.iter().enumerate().skip(start).take(list_height) {
-        let label = &cl.commands[cmd_idx].label;
-        let is_sel = row == sel;
-        let style = if is_sel {
-            Style::default()
-                .fg(t.bg)
-                .bg(t.main)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(t.text)
-        };
-        let prefix = if is_sel { "› " } else { "  " };
-        lines.push(Line::from(Span::styled(format!("{prefix}{label}"), style)));
+fn row_text(prefix: &str, label: &str, value: &str, width: u16) -> String {
+    let usable = width.saturating_sub(1) as usize;
+    let left = format!("{prefix}{label}");
+    let spaces = usable.saturating_sub(left.chars().count() + value.chars().count());
+    format!("{left}{}{value}", " ".repeat(spaces.max(1)))
+}
+
+fn render_groups(app: &crate::app::App, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+    let Some(command_line) = app.command_line.as_ref() else {
+        return;
+    };
+    let groups = command_line.groups();
+    let (selected, start) =
+        selected_window(command_line.selected, groups.len(), area.height as usize);
+    let lines = groups
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(area.height as usize)
+        .map(|(index, group)| {
+            let active = index == selected;
+            let prefix = if active { " › " } else { "   " };
+            let text = row_text(
+                prefix,
+                group,
+                &current_value(group, &app.config),
+                area.width,
+            );
+            let style = if active {
+                Style::default()
+                    .fg(app.theme.bg)
+                    .bg(app.theme.main)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.text)
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_commands(
+    app: &crate::app::App,
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    filtered: &[usize],
+) {
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+    let Some(command_line) = app.command_line.as_ref() else {
+        return;
+    };
+    if filtered.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" no matches", Style::default().fg(app.theme.error)),
+                Span::styled(
+                    "   backspace changes the filter",
+                    Style::default().fg(app.theme.sub),
+                ),
+            ])),
+            area,
+        );
+        return;
     }
-    let list_rect = Rect::new(inner.x, inner.y + 1, inner.width, list_height as u16);
-    frame.render_widget(Paragraph::new(lines), list_rect);
+    let (selected, start) =
+        selected_window(command_line.selected, filtered.len(), area.height as usize);
+    let lines = filtered
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(area.height as usize)
+        .map(|(row, command_index)| {
+            let command = &command_line.commands[*command_index];
+            let mut label = command.label.as_str();
+            if command_line.query.is_empty() && command_line.group.is_some() {
+                label = label
+                    .split_once(" > ")
+                    .map(|(_, option)| option)
+                    .unwrap_or(label);
+            }
+            let active_value = label.ends_with(" •");
+            let label = label.strip_suffix(" •").unwrap_or(label);
+            let prefix = if row == selected {
+                " › "
+            } else if active_value {
+                " ✓ "
+            } else {
+                "   "
+            };
+            let style = if row == selected {
+                Style::default()
+                    .fg(app.theme.bg)
+                    .bg(app.theme.main)
+                    .add_modifier(Modifier::BOLD)
+            } else if active_value {
+                Style::default().fg(app.theme.main)
+            } else {
+                Style::default().fg(app.theme.text)
+            };
+            Line::from(Span::styled(format!("{prefix}{label}"), style))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 #[cfg(test)]
@@ -841,6 +1645,120 @@ mod tests {
         let f = cl.filtered();
         assert!(!f.is_empty());
         assert!(cl.current_action().is_some());
+    }
+
+    #[test]
+    fn tabs_reduce_commands_to_setting_groups() {
+        let c = Config::default();
+        let mut cl = CommandLine::new(&c);
+        cl.select_tab(1);
+        let groups = cl.groups();
+        assert!(groups.contains(&"mode"));
+        assert!(groups.contains(&"language"));
+        assert!(!groups.contains(&"theme"));
+        assert!(cl.filtered().is_empty());
+
+        assert!(cl.activate().is_none());
+        assert_eq!(cl.group, Some("mode"));
+        assert!(cl
+            .filtered()
+            .iter()
+            .all(|index| cl.commands[*index].action.group() == "mode"));
+    }
+
+    #[test]
+    fn every_command_is_reachable_from_its_tab() {
+        let c = Config::default();
+        let mut cl = CommandLine::new(&c);
+        for tab_index in 1..ConfigTab::ALL.len() {
+            cl.select_tab(tab_index);
+            let groups = cl.groups();
+            for command in cl
+                .commands
+                .iter()
+                .filter(|command| command.action.tab() == cl.tab)
+            {
+                assert!(
+                    groups.contains(&command.action.group()),
+                    "{} is not reachable from {}",
+                    command.label,
+                    cl.tab.label()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn current_tab_searches_every_category() {
+        let c = Config::default();
+        let mut cl = CommandLine::new(&c);
+        for ch in "theme nord".chars() {
+            cl.push_char(ch);
+        }
+        assert!(cl.filtered().iter().any(|index| matches!(
+            cl.commands[*index].action,
+            Action::SetTheme(ref name) if name == "nord"
+        )));
+    }
+
+    #[test]
+    fn tab_change_resets_drill_down_and_filter() {
+        let c = Config::default();
+        let mut cl = CommandLine::new(&c);
+        cl.select_tab(1);
+        cl.activate();
+        cl.push_char('t');
+        cl.next_tab(1);
+        assert_eq!(cl.tab, ConfigTab::Behavior);
+        assert!(cl.group.is_none());
+        assert!(cl.query.is_empty());
+        assert_eq!(cl.selected, 0);
+    }
+
+    #[test]
+    fn single_action_setting_activates_without_drill_down() {
+        let c = Config::default();
+        let mut cl = CommandLine::new(&c);
+        cl.select_tab(2);
+        cl.selected = cl
+            .groups()
+            .iter()
+            .position(|group| *group == "freedom mode")
+            .unwrap();
+
+        assert!(matches!(
+            cl.activate(),
+            Some(Action::ToggleField(BoolField::FreedomMode))
+        ));
+        assert!(cl.group.is_none());
+    }
+
+    #[test]
+    fn refresh_preserves_context_and_updates_active_values() {
+        let mut config = Config::default();
+        let mut cl = CommandLine::new(&config);
+        cl.select_tab(1);
+        cl.activate();
+        cl.selected = 1;
+
+        config.mode = Mode::Words;
+        cl.refresh(&config);
+
+        assert_eq!(cl.tab, ConfigTab::Test);
+        assert_eq!(cl.group, Some("mode"));
+        assert_eq!(cl.selected, 1);
+        assert!(cl
+            .commands
+            .iter()
+            .any(|command| command.label == "mode > words •"));
+    }
+
+    #[test]
+    fn navigation_actions_close_the_workspace() {
+        assert!(Action::ViewStats.closes_config_workspace());
+        assert!(Action::EditCustomText.closes_config_workspace());
+        assert!(Action::Quit.closes_config_workspace());
+        assert!(!Action::SetMode(Mode::Words).closes_config_workspace());
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod app;
 mod commandline;
 mod config;
 mod content;
+mod dashboard;
 mod engine;
 mod funbox;
 mod numbers;
@@ -85,8 +86,11 @@ enum Commands {
         /// The language name (e.g. spanish, english_5k, code_rust)
         name: String,
     },
-    /// Open straight to your local stats and progress.
-    Stats,
+    /// Open local stats in the terminal or serve the browser dashboard.
+    Stats {
+        #[command(subcommand)]
+        command: Option<StatsCommands>,
+    },
     /// Practice words you previously missed, typed slowly, or both.
     Practice {
         /// Practice source: missed, slow, or mixed.
@@ -100,6 +104,19 @@ enum Commands {
     Data {
         #[command(subcommand)]
         command: DataCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum StatsCommands {
+    /// Start the local browser dashboard.
+    Serve {
+        /// Localhost port for the dashboard.
+        #[arg(long, default_value_t = 4242)]
+        port: u16,
+        /// Print the URL without opening the default browser.
+        #[arg(long)]
+        no_open: bool,
     },
 }
 
@@ -163,6 +180,12 @@ fn main() -> Result<()> {
     if let Some(Commands::Sync { kind, name }) = &cli.command {
         return web::run_sync(kind, name);
     }
+    if let Some(Commands::Stats {
+        command: Some(StatsCommands::Serve { port, no_open }),
+    }) = &cli.command
+    {
+        return dashboard::serve(*port, !no_open);
+    }
     if let Some(Commands::Data { command }) = &cli.command {
         match command {
             DataCommands::Export { path } => {
@@ -209,7 +232,7 @@ fn main() -> Result<()> {
     let mut terminal = tui::init()?;
     let mut app = App::new(config);
     // `mtype stats` opens straight to the progress screen
-    if matches!(cli.command, Some(Commands::Stats)) {
+    if matches!(cli.command, Some(Commands::Stats { command: None })) {
         app.open_stats();
     }
     let result = app.run(&mut terminal);

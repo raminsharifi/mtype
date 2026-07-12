@@ -19,7 +19,7 @@ pub fn database_path() -> Result<PathBuf> {
     Ok(dirs.data_dir().join("analytics.sqlite3"))
 }
 
-fn open() -> Result<Connection> {
+pub(crate) fn open_connection() -> Result<Connection> {
     let path = database_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -139,7 +139,7 @@ fn event_kind(kind: &InputEventKind) -> &'static str {
 /// Persist a complete test and all word/input events in one transaction.
 /// Duplicate `external_id`s are ignored, making retries idempotent.
 pub fn record_test(result: &TestResult, occurred_at_ms: u128, difficulty: &str) -> Result<()> {
-    let mut conn = open()?;
+    let mut conn = open_connection()?;
     record_test_in(&mut conn, result, occurred_at_ms, difficulty)
 }
 
@@ -238,7 +238,7 @@ fn record_test_in(
 /// Select an ordered adaptive-practice list. Missed mode favors words with
 /// errors, slow mode favors the lowest burst speed, and mixed balances both.
 pub fn practice_words(language: &str, mode: PracticeMode, count: usize) -> Result<Vec<String>> {
-    let conn = open()?;
+    let conn = open_connection()?;
     practice_words_in(&conn, language, mode, count)
 }
 
