@@ -8,6 +8,10 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to upload binaries to
+        required: true
 
 permissions:
   contents: write
@@ -21,7 +25,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset: mtype-linux-x86_64
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             asset: mtype-macos-x86_64
           - os: macos-latest
@@ -38,7 +42,7 @@ jobs:
       - name: Stage binary
         run: cp target/${{ matrix.target }}/release/mtype ${{ matrix.asset }}
       - name: Upload to release
-        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.asset }}" --clobber
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$RELEASE_TAG" "${{ matrix.asset }}" --clobber
