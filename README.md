@@ -1,253 +1,80 @@
 # mtype
 
-A typing speed test that runs in your terminal. It is a port of [Monkeytype](https://github.com/monkeytypegame/monkeytype),
-so if you have used monkeytype.com you already know how it works. Words show up,
-you type them, and it measures your typing speed and accuracy in real time. No
-browser, no account, no network. It works fully offline.
+A fast, offline typing test for the terminal, inspired by
+[Monkeytype](https://github.com/monkeytypegame/monkeytype). It includes local
+history, adaptive practice, replay, a browser-based growth dashboard, and no
+account system.
 
-mtype is a command line typing test, a terminal WPM test, and a Monkeytype style
-typing trainer for macOS and Linux.
-
-```
+```text
   30
 
   the quick brown fox jumps over the lazy dog and then keeps
   going while the timer counts down and your wpm and accuracy
   update as you type each word in the test
 
-  tab restart    esc menu    ctrl+c quit
+  tab restart    esc config    ctrl+c quit
 ```
 
-## Why this exists
+## Highlights
 
-I wanted Monkeytype without leaving the terminal, so I could run a quick typing
-test between other work without opening a browser or signing in. mtype keeps the
-parts that matter (the test, the modes, the live stats, the results graph) and
-drops the account system. Your results and personal bests are saved on your own
-machine instead.
-
-## Features
-
-- Test modes: time, words, quote, zen, and custom text
-- Punctuation, numbers, and three difficulty levels (normal, expert, master)
-- Live words per minute, accuracy, and a timer while you type
-- A results screen with a WPM over time graph, raw WPM, consistency, and a full
-  character breakdown
-- Personal best tracking saved locally, which is the offline replacement for the
-  online account
-- A stats and progress page, like the Monkeytype account page but local: lifetime
-  numbers (tests, time typing, highest and average wpm, accuracy, consistency), a
-  wpm over time graph, an activity heatmap, and current and longest streaks
-- Adaptive practice for words you missed or typed slowly, powered by a local
-  SQLite analytics database that records word outcomes and replayable input
-  events for future local ML experiments
-- Input history and animated replay from the results screen
-- Portable JSON export/import and an explicit local-data reset command
-- An in-app custom-text editor and five offline configuration preset slots
-- Every English word list from Monkeytype bundled and ready offline: english,
-  english_1k, english_5k, english_10k, english_25k, english_450k, and themed sets
-  like english_medical, english_legal, and english_shakespearean
-- A command palette (press Esc) with fuzzy search to change any setting
-- Funbox modifiers such as rot13, ALL_CAPS, sponge case, morse, binary, hex, and
-  gibberish
-- Eight bundled true-color themes plus custom themes loaded from local TOML files
+- Time, words, quote, zen, custom-text, and adaptive-practice modes
+- Live WPM and accuracy with detailed results and animated replay
+- Local personal bests, streaks, activity, and word-level analytics
+- Wrong-word and slow-word practice backed by local SQLite data
+- Animated private dashboard through `mtype stats serve`
+- Lazy.nvim-inspired tabbed config workspace
+- All Monkeytype English word lists bundled for offline use
+- Themes, funboxes, presets, portable backup, and custom content
 
 ## Install
 
-You do not need Rust to run mtype if you grab a prebuilt binary.
-
-### Option 1: download a prebuilt binary
-
-Open the releases page and download the file for your system:
-
-https://github.com/raminsharifi/mtype/releases/latest
-
-macOS on Apple Silicon (M1, M2, M3, and newer):
+Download the latest binary from [GitHub Releases](https://github.com/raminsharifi/mtype/releases/latest),
+or install from source:
 
 ```sh
-curl -L -o mtype https://github.com/raminsharifi/mtype/releases/latest/download/mtype-macos-arm64
-chmod +x mtype
-xattr -d com.apple.quarantine mtype
-./mtype
-```
-
-The xattr line clears the flag macOS puts on downloaded files. The binary is not
-code signed, so without it macOS may refuse to open the file the first time. You
-can also right click the file in Finder and choose Open.
-
-To run it from anywhere, move it onto your PATH:
-
-```sh
-sudo mv mtype /usr/local/bin/
-mtype
-```
-
-If your platform is not on the releases page yet, use Option 2.
-
-### Option 2: build it from source
-
-This works on Linux and Apple Silicon Macs. The command below installs Rust
-first if you do not already have it, then builds and installs mtype. It takes
-about a minute.
-
-```sh
-# skip this line if you already have Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
 cargo install --git https://github.com/raminsharifi/mtype
 ```
 
-The binary is installed to `~/.cargo/bin/mtype`, which rustup adds to your PATH.
-Open a new terminal and run `mtype`.
+Prebuilt binaries are available for macOS Apple Silicon and Linux x86_64. See
+the [installation guide](docs/installation.md) for platform-specific steps.
 
-## Usage
-
-Run it with no arguments to start a 30 second test:
+## Quick start
 
 ```sh
 mtype
-```
-
-Type to begin. A few examples:
-
-```sh
 mtype --time 60 --punctuation
 mtype --mode words --words 50
-mtype --mode quote
-mtype --mode zen
-mtype --language english_10k --time 30
-mtype --custom "the quick brown fox jumps over the lazy dog"
-mtype practice mixed --words 25
-mtype data export mtype-backup.json
-```
-
-### Keys
-
-- Type to take the test
-- Space moves to the next word
-- Backspace deletes a letter, Ctrl and Backspace deletes a word
-- Tab restarts the test
-- Esc opens the tabbed config workspace, where you can review or change any setting
-- Ctrl and C quits
-
-On the results screen, Tab or Enter starts a new test, S opens your stats, I
-shows word-by-word input history, W replays the test, M practices missed words,
-L practices slow words, Esc opens the config workspace, and Q quits.
-
-Inside config, Tab and Shift+Tab (or Left and Right) switch sections, number
-keys 1 through 6 jump directly to a tab, Up and Down move, and Enter opens or
-applies a setting. Type to fuzzy-search the active tab; typing from Current
-searches every setting. Backspace clears the filter or returns from a setting.
-
-If you want the text to look bigger, use your terminal's own font zoom (on macOS
-that is Cmd plus and Cmd minus, on most Linux terminals Ctrl plus and Ctrl minus).
-
-## Stats and progress
-
-mtype keeps a local equivalent of the Monkeytype account page. Every completed
-test is saved on your machine and used to show your progress over time. Open it
-in three ways:
-
-- press S on the results screen
-- search for "view stats" in the config workspace (Esc)
-- run `mtype stats` to jump straight there
-- run `mtype stats serve` to open the animated browser dashboard
-
-You get lifetime numbers (tests completed and started, time typing, estimated
-words, highest and average wpm, accuracy, and consistency), a wpm over time graph
-so you can see if you are improving, an activity heatmap of the days you
-practiced, and your current and longest streak. Press Tab or Esc to go back to a
-test. None of this leaves your machine.
-
-The browser dashboard adds interactive net and raw speed charts, accuracy
-overlays, mode comparisons, a one-year activity view, character confusions,
-slow words, wrong-word search, and concrete training recommendations. It binds
-only to localhost, reads the same local history and SQLite database as the TUI,
-and includes all of its assets in the `mtype` binary. Stop it with Ctrl and C.
-
-```sh
-mtype stats serve
-mtype stats serve --port 5050
-mtype stats serve --no-open
-```
-
-## Adaptive practice and local analytics
-
-Every saved test also writes normalized test, word, and input-event records to a
-local SQLite database. Incorrect submissions and errors corrected before a word
-was submitted are both retained. This powers adaptive practice now and provides
-structured data for future local ML features.
-
-```sh
 mtype practice missed --words 25
-mtype practice slow --words 25
-mtype practice mixed --words 50
+mtype stats serve
 ```
 
-From a results screen, press M for missed-word practice or L for slow-word
-practice. If there is not enough history yet, practice mode falls back to words
-from the selected language.
+Press Esc during a test to open config. Use Tab to change sections, Up and Down
+to move, Enter to open or apply a setting, and Esc to close. Config changes stay
+open so you can adjust several settings in one visit.
 
-## Back up or reset local data
+## Documentation
 
-Exports include results, word outcomes, and input replay events:
+- [Installation](docs/installation.md)
+- [Complete CLI reference](docs/cli-reference.md)
+- [Tests, modes, and keyboard controls](docs/usage.md)
+- [Configuration workspace](docs/configuration.md)
+- [Scoring, metrics, and results](docs/scoring-and-results.md)
+- [Stats, dashboard, and adaptive practice](docs/stats-and-practice.md)
+- [Local data, privacy, backup, and reset](docs/data-and-privacy.md)
+- [Languages, quotes, and themes](docs/custom-content.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Development](docs/development.md)
 
-```sh
-mtype data export mtype-backup.json
-mtype data import mtype-backup.json
-mtype data reset --yes
-```
+Start with the [documentation index](docs/README.md) for a guided path.
 
-## More languages and quotes
+## Offline by default
 
-mtype ships with every English word list offline. If you want another language
-or more quotes, download them from the Monkeytype repository into your local data
-folder:
-
-```sh
-mtype sync language spanish
-mtype sync quotes french
-mtype --language spanish --mode words
-```
-
-This is the only feature that uses the network, and it is optional. Everything
-else works with no connection.
-
-## Where your data is stored
-
-On macOS this lives under `~/Library/Application Support/com.monkeytype.mtype/`,
-and on Linux under `~/.config/mtype/` and `~/.local/share/mtype/`:
-
-- `config.toml` holds your settings
-- `results.json` holds your test history and personal bests
-- `meta.json` holds the number of tests you have started
-- `analytics.sqlite3` holds normalized test, word, mistake, and input-event data
-- `presets.json` holds your offline configuration preset slots
-- `themes/*.toml` holds optional custom themes
-- `languages/` and `quotes/` hold anything you downloaded with `mtype sync`
-
-## Develop
-
-```sh
-git clone https://github.com/raminsharifi/mtype
-cd mtype
-cargo run --release
-cargo test
-```
-
-The scoring and word generation logic is pure and unit tested, so most of the
-behavior is covered without needing a terminal.
+Tests, saved results, analytics, practice, config, and the browser dashboard all
+run locally. `mtype sync` is the only optional network feature; it downloads
+extra content for later offline use.
 
 ## Credits and license
 
-mtype is a port of [Monkeytype](https://github.com/monkeytypegame/monkeytype).
-The English word lists, the quotes, and the core algorithms for word generation
-and scoring come from that project. Thank you to the Monkeytype maintainers and
-contributors for building it and for releasing it as open source.
-
-Monkeytype is licensed under the GNU General Public License version 3. Because
-mtype is derived from it, mtype is licensed under the GPL-3.0 as well. See the
-[LICENSE](LICENSE) file for the full text and [NOTICE.md](NOTICE.md) for the
-details of what was ported.
-
-mtype is not affiliated with, endorsed by, or sponsored by Monkeytype.
+mtype is derived from Monkeytype and is licensed under GPL-3.0-or-later. See
+[LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). mtype is not affiliated with,
+endorsed by, or sponsored by Monkeytype.
