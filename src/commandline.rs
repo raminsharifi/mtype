@@ -4,8 +4,8 @@
 
 use crate::config::{
     CaretStyle, ConfidenceMode, Config, Difficulty, HighlightMode, IndicateTypos, IndicatorStyle,
-    Mode, PaceCaret, PracticeMode, QuickRestart, QuoteLengthBand, SmoothCaret, StopOnError,
-    TypingSpeedUnit,
+    Mode, PaceCaret, PracticeMode, QuickRestart, QuoteLengthBand, SessionOverrides, SmoothCaret,
+    StopOnError, TypingSpeedUnit,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,10 +243,43 @@ impl Action {
         }
     }
 
+    /// Clear the session-only CLI override marks for the fields this action
+    /// sets, so the explicit palette change persists to config.toml (CLI flags
+    /// are "this run only"; see `SessionOverrides`).
+    pub fn clear_session_overrides(&self, o: &mut SessionOverrides) {
+        match self {
+            Action::SetMode(_) => o.mode = false,
+            Action::SetTime(_) => {
+                o.time = false;
+                o.mode = false;
+            }
+            Action::SetWords(_) => {
+                o.words = false;
+                o.mode = false;
+            }
+            Action::SetPractice(_, _) => {
+                o.mode = false;
+                o.practice_mode = false;
+                o.practice_word_count = false;
+            }
+            Action::SetDifficulty(_) => o.difficulty = false,
+            // these switch to quote mode as a side effect
+            Action::SetQuoteLengthAll | Action::SetQuoteLength(_) => o.mode = false,
+            Action::ToggleField(BoolField::Punctuation) => o.punctuation = false,
+            Action::ToggleField(BoolField::Numbers) => o.numbers = false,
+            Action::SetLanguage(_) => o.language = false,
+            // a loaded preset replaces the whole config on purpose
+            Action::LoadPreset(_) => *o = SessionOverrides::default(),
+            _ => {}
+        }
+    }
+
     pub fn apply(&self, c: &mut Config) -> Outcome {
         match self {
             Action::SetMode(m) => {
                 c.mode = *m;
+                // changing mode releases an explicit `--quote-id` pin
+                c.quote_id = None;
                 Outcome::Restart
             }
             Action::SetTime(t) => {
@@ -272,11 +305,15 @@ impl Action {
             Action::SetQuoteLengthAll => {
                 c.quote_length = QuoteLengthBand::ALL.to_vec();
                 c.mode = Mode::Quote;
+                // a new band releases the pinned quote so it can take effect
+                c.quote_id = None;
                 Outcome::Restart
             }
             Action::SetQuoteLength(b) => {
                 c.quote_length = vec![*b];
                 c.mode = Mode::Quote;
+                // a new band releases the pinned quote so it can take effect
+                c.quote_id = None;
                 Outcome::Restart
             }
             Action::ToggleField(f) => {
@@ -370,6 +407,9 @@ impl Action {
             }
             Action::SetLanguage(name) => {
                 c.language = name.clone();
+                // quote ids are per-language: keeping the pin would look the
+                // old id up in the new language's collection
+                c.quote_id = None;
                 Outcome::Restart
             }
             Action::ToggleFunbox(name) => {

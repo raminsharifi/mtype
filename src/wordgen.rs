@@ -122,6 +122,20 @@ fn has_digit(word: &str) -> bool {
     word.chars().any(|c| c.is_ascii_digit())
 }
 
+/// Practice words are replayed verbatim from past results, which store targets
+/// with whatever decorations they carried at the time ("Word.", "(like)",
+/// "'order'"). When punctuation is off, strip those decorations back to the
+/// base word; word-internal characters (apostrophes, hyphens) are kept since
+/// they belong to the word itself.
+fn strip_practice_decorations(word: &str) -> String {
+    let stripped = word.trim_matches(|c: char| !c.is_alphanumeric());
+    if stripped.chars().any(|c| c.is_uppercase()) {
+        stripped.to_lowercase()
+    } else {
+        stripped.to_string()
+    }
+}
+
 fn british_spelling(word: &str) -> String {
     match word {
         "color" => "colour",
@@ -165,6 +179,36 @@ fn british_spelling(word: &str) -> String {
         _ => return word.to_string(),
     }
     .to_string()
+}
+
+/// Ordered words (quote / custom / practice) carry decorations and capitals
+/// ("Color," / "color."). Upstream's `applyBritishEnglishToWord` runs on
+/// quote/custom words too, matching case-insensitively inside the word - so
+/// split off the non-letter edges, map the core, keep the original first
+/// letter's capitalization, and reattach the decorations.
+fn british_spelling_decorated(word: &str) -> String {
+    let Some(start) = word.find(|c: char| c.is_alphabetic()) else {
+        return word.to_string();
+    };
+    let end = word
+        .char_indices()
+        .rfind(|(_, c)| c.is_alphabetic())
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(word.len());
+    let (prefix, rest) = word.split_at(start);
+    let (core, suffix) = rest.split_at(end - start);
+
+    let lower = core.to_lowercase();
+    let mapped = british_spelling(&lower);
+    if mapped == lower {
+        return word.to_string();
+    }
+    let mapped = if core.chars().next().is_some_and(char::is_uppercase) {
+        capitalize_first(&mapped)
+    } else {
+        mapped
+    };
+    format!("{prefix}{mapped}{suffix}")
 }
 
 /// English-only port of `punctuateWord`. Each `else if` branch draws one fresh
@@ -239,34 +283,62 @@ impl WordGenerator {
                 (Source::Ordered(words), bound, q)
             }
             Mode::Custom => {
-                let words: Vec<String> = cfg
-                    .custom_text
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
+                // upstream's default custom text; an empty text would
+                // otherwise produce a zero-word test
+                let text = if cfg.custom_text.trim().is_empty() {
+                    "The quick brown fox jumps over the lazy dog"
+                } else {
+                    cfg.custom_text.as_str()
+                };
+                let words: Vec<String> = text.split_whitespace().map(|s| s.to_string()).collect();
                 let bound = words.len().max(1);
                 (Source::Ordered(words), bound, None)
             }
             Mode::Practice => {
-                let words: Vec<String> = cfg
+                let mut words: Vec<String> = cfg
                     .practice_text
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect();
+                let count = cfg.practice_word_count.max(1) as usize;
+                if !cfg.punctuation {
+                    words = words
+                        .iter()
+                        .map(|w| strip_practice_decorations(w))
+                        .filter(|w| !w.is_empty())
+                        .collect();
+                }
+                if !cfg.numbers {
+                    // Stored digit words are whole-word `getNumbers` injections
+                    // recorded by past numbers-on tests; drop them when numbers
+                    // is off (mirrors the pool digit gate in next_pool_word).
+                    words.retain(|w| !w.chars().all(|c| c.is_ascii_digit()));
+                }
+                // Filtering can remove every stored practice target (for
+                // example, an all-number practice set with numbers disabled).
+                // Fall back after filtering so the finite test is never empty.
                 if words.is_empty() {
                     let lang = content::language(&cfg.language);
-                    let count = cfg.practice_word_count.max(1) as usize;
-                    let mut fallback = Vec::with_capacity(count);
-                    if !lang.words.is_empty() {
-                        for _ in 0..count {
-                            fallback.push(lang.words[rng.gen_range(0..lang.words.len())].clone());
-                        }
+                    let mut fallback: Vec<String> = lang.words.clone();
+                    if !cfg.punctuation {
+                        fallback = fallback
+                            .iter()
+                            .map(|w| strip_practice_decorations(w))
+                            .filter(|w| !w.is_empty())
+                            .collect();
                     }
-                    (Source::Ordered(fallback), count, None)
-                } else {
-                    let bound = words.len();
-                    (Source::Ordered(words), bound, None)
+                    if !cfg.numbers {
+                        fallback.retain(|w| !w.chars().all(|c| c.is_ascii_digit()));
+                    }
+                    if fallback.is_empty() {
+                        fallback.push("the".to_string());
+                    }
+                    for _ in 0..count {
+                        words.push(fallback[rng.gen_range(0..fallback.len())].clone());
+                    }
                 }
+                let bound = words.len().max(1);
+                (Source::Ordered(words), bound, None)
             }
         };
 
@@ -313,8 +385,17 @@ impl WordGenerator {
                 if self.ordered_index >= words.len() {
                     return None;
                 }
-                let w = words[self.ordered_index].clone();
+                let mut w = words[self.ordered_index].clone();
                 self.ordered_index += 1;
+                // Upstream's getNextWord runs these on every branch, so quote/
+                // custom/practice words get them too: the british english
+                // replacement pass, then alterText funboxes (rot13, backwards,
+                // …). getWord funboxes stay pool-only - upstream replaces
+                // generated words with them rather than altering quote text.
+                if self.config.british_english {
+                    w = british_spelling_decorated(&w);
+                }
+                w = funbox::alter_all(&self.funboxes, w, self.word_index, self.bound, rng);
                 w
             }
             Source::Pool(pool) => {
@@ -522,6 +603,157 @@ mod tests {
         assert!(words
             .iter()
             .all(|w| !w.chars().any(|ch| ch.is_ascii_uppercase())));
+    }
+
+    #[test]
+    fn practice_strips_stored_punctuation_when_off() {
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = false;
+        c.practice_text = "interest. order, the? (like) 'order' \"world\" Word don't -".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(
+            words,
+            ["interest", "order", "the", "like", "order", "world", "word", "don't"]
+        );
+    }
+
+    #[test]
+    fn practice_keeps_stored_punctuation_when_on() {
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = true;
+        c.practice_text = "interest. order, Word".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(words, ["interest.", "order,", "Word"]);
+    }
+
+    #[test]
+    fn practice_fallback_has_no_capitals_without_punctuation() {
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = false;
+        c.practice_text = String::new();
+        c.practice_word_count = 50;
+        let mut rng = StdRng::seed_from_u64(13);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert!(!words.is_empty());
+        assert!(words
+            .iter()
+            .all(|w| !w.chars().any(|ch| ch.is_ascii_uppercase())));
+    }
+
+    #[test]
+    fn practice_drops_stored_digit_words_when_numbers_off() {
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = false;
+        c.numbers = false;
+        c.practice_text = "8425 interest 19 order 3".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(words, ["interest", "order"]);
+    }
+
+    #[test]
+    fn practice_falls_back_when_filtering_removes_every_word() {
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = false;
+        c.numbers = false;
+        c.practice_word_count = 7;
+        c.practice_text = "8425 19 3".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(words.len(), 7);
+        assert!(words.iter().all(|word| !word.is_empty()));
+        assert!(words
+            .iter()
+            .all(|word| !word.chars().all(|c| c.is_ascii_digit())));
+    }
+
+    #[test]
+    fn practice_keeps_stored_digit_words_when_numbers_on() {
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = false;
+        c.numbers = true;
+        c.practice_text = "8425 interest 19 order".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(words, ["8425", "interest", "19", "order"]);
+    }
+
+    #[test]
+    fn british_english_applies_to_custom_words_with_decorations() {
+        let mut c = cfg();
+        c.mode = Mode::Custom;
+        c.british_english = true;
+        c.custom_text = "color Center realize, \"gray\" (Behavior) plain don't".into();
+        let mut rng = StdRng::seed_from_u64(11);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(
+            words,
+            [
+                "colour",
+                "Centre",
+                "realise,",
+                "\"grey\"",
+                "(Behaviour)",
+                "plain",
+                "don't"
+            ]
+        );
+    }
+
+    #[test]
+    fn british_english_applies_to_quote_words() {
+        let mut c = cfg();
+        c.mode = Mode::Quote;
+        c.british_english = true;
+        // "But on this particular day I did not like the color of the sky."
+        c.quote_id = Some(611);
+        let mut rng = StdRng::seed_from_u64(2);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert!(words.iter().any(|w| w == "colour"), "words: {words:?}");
+        assert!(!words.iter().any(|w| w == "color"));
+    }
+
+    #[test]
+    fn funbox_alter_text_applies_to_ordered_modes() {
+        // custom
+        let mut c = cfg();
+        c.mode = Mode::Custom;
+        c.custom_text = "abc hello".into();
+        c.funbox = vec!["backwards".to_string()];
+        let mut rng = StdRng::seed_from_u64(3);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(words, ["cba", "olleh"]);
+
+        // practice
+        let mut c = cfg();
+        c.mode = Mode::Practice;
+        c.punctuation = false;
+        c.practice_text = "hello world".into();
+        c.funbox = vec!["rot13".to_string()];
+        let mut rng = StdRng::seed_from_u64(3);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert_eq!(words, ["uryyb", "jbeyq"]);
+
+        // quote
+        let mut c = cfg();
+        c.mode = Mode::Quote;
+        c.quote_length = vec![QuoteLengthBand::Short];
+        c.funbox = vec!["ALL_CAPS".to_string()];
+        let mut rng = StdRng::seed_from_u64(2);
+        let (words, _) = generate_test_words(&c, &mut rng);
+        assert!(!words.is_empty());
+        assert!(
+            words.iter().all(|w| *w == w.to_uppercase()),
+            "words: {words:?}"
+        );
     }
 
     #[test]

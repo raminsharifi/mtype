@@ -4,6 +4,7 @@
 use crate::app::{App, ResultsView};
 use crate::config::TypingSpeedUnit;
 use crate::engine::{InputEventKind, TestResult};
+use crate::stats::{fmt_accuracy, fmt_num, unit_label};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::symbols::Marker;
@@ -28,11 +29,14 @@ pub fn render_results(app: &App, frame: &mut Frame, area: Rect) {
 
     if area.width < 24 || area.height < 8 {
         // too small for the full layout - just the headline numbers
+        let unit = app.config.typing_speed_unit;
+        let dec = app.config.always_show_decimal_places;
         frame.render_widget(
             Paragraph::new(format!(
-                "{} wpm  {}% acc",
-                fmt_num(r.wpm, false),
-                fmt_num(r.acc, false)
+                "{} {}  {}% acc",
+                fmt_speed(r.wpm, unit, dec),
+                unit_label(unit),
+                fmt_accuracy(r.acc, dec)
             ))
             .alignment(Alignment::Center),
             area,
@@ -72,6 +76,8 @@ pub fn render_results(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_input_history(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
+    let unit = app.config.typing_speed_unit;
+    let dec = app.config.always_show_decimal_places;
     let width = area.width.saturating_sub(4).min(100);
     let height = area.height.saturating_sub(2);
     let region = crate::ui::center_rect(area, width, height);
@@ -113,8 +119,11 @@ fn render_input_history(app: &App, frame: &mut Frame, area: Rect, r: &TestResult
             ),
             Span::styled(
                 format!(
-                    "  {}ms  {:.0} burst  {} error keys",
-                    word.duration_ms, word.burst_wpm, word.incorrect_keystrokes
+                    "  {}ms  {} {} burst  {} error keys",
+                    word.duration_ms,
+                    fmt_speed(word.burst_wpm, unit, dec),
+                    unit_label(unit),
+                    word.incorrect_keystrokes
                 ),
                 Style::default().fg(app.theme.sub),
             ),
@@ -127,8 +136,11 @@ fn render_input_history(app: &App, frame: &mut Frame, area: Rect, r: &TestResult
     frame.render_widget(Paragraph::new(lines), region);
 }
 
-fn render_replay(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
-    let elapsed = app.replay_elapsed_ms();
+/// Rebuild the per-word typed strings from the input log up to `elapsed` ms.
+/// Only applied events mutate the text: inputs the engine blocked (stop on
+/// error: letter, confidence max backspaces, ...) were logged for analytics
+/// but never appeared in the test, so the replay must skip them too.
+fn replay_typed_words(r: &TestResult, elapsed: u64) -> Vec<String> {
     let word_count = r
         .word_outcomes
         .iter()
@@ -140,6 +152,7 @@ fn render_replay(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
         .input_events
         .iter()
         .take_while(|event| event.elapsed_ms <= elapsed)
+        .filter(|event| event.applied)
     {
         if event.word_index >= typed.len() {
             typed.resize(event.word_index + 1, String::new());
@@ -157,6 +170,12 @@ fn render_replay(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
             InputEventKind::Commit => {}
         }
     }
+    typed
+}
+
+fn render_replay(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
+    let elapsed = app.replay_elapsed_ms();
+    let typed = replay_typed_words(r, elapsed);
     let targets = r
         .word_outcomes
         .iter()
@@ -226,10 +245,14 @@ fn render_status(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
             Style::default().fg(t.error).add_modifier(Modifier::BOLD),
         ));
     } else if app.pb_info.is_pb {
+        // previous best is stored in raw wpm; show it in the same unit as the
+        // converted headline right below it
+        let unit = app.config.typing_speed_unit;
+        let dec = app.config.always_show_decimal_places;
         let prev = app
             .pb_info
             .previous_best
-            .map(|b| format!(" (prev {})", fmt_num(b, false)))
+            .map(|b| format!(" (prev {})", fmt_speed(b, unit, dec)))
             .unwrap_or_default();
         spans.push(Span::styled(
             format!("🏆 new personal best!{prev}"),
@@ -253,7 +276,7 @@ fn render_headline(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
         ),
         Span::styled(unit_label(unit), Style::default().fg(t.sub)),
         Span::styled(
-            format!("        {}% ", fmt_num(r.acc, dec)),
+            format!("        {}% ", fmt_accuracy(r.acc, dec)),
             Style::default().fg(t.main).add_modifier(Modifier::BOLD),
         ),
         Span::styled("acc", Style::default().fg(t.sub)),
@@ -266,25 +289,27 @@ fn render_chart(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
     if r.wpm_history.len() < 2 || area.height < 4 {
         return;
     }
+    // histories are stored in raw wpm; plot them in the configured unit so the
+    // chart agrees with the converted headline above it (and the stats graph)
+    let unit = app.config.typing_speed_unit;
     let wpm_pts: Vec<(f64, f64)> = r
         .wpm_history
         .iter()
         .enumerate()
-        .map(|(i, &w)| ((i + 1) as f64, w))
+        .map(|(i, &w)| ((i + 1) as f64, unit.convert_from_wpm(w)))
         .collect();
     let raw_pts: Vec<(f64, f64)> = r
         .raw_history
         .iter()
         .enumerate()
-        .map(|(i, &w)| ((i + 1) as f64, w))
+        .map(|(i, &w)| ((i + 1) as f64, unit.convert_from_wpm(w)))
         .collect();
 
     let n = r.wpm_history.len() as f64;
-    let all_values = r
-        .raw_history
+    let all_values = raw_pts
         .iter()
-        .chain(r.wpm_history.iter())
-        .copied()
+        .chain(wpm_pts.iter())
+        .map(|(_, value)| *value)
         .collect::<Vec<_>>();
     let mut ymax = all_values.iter().copied().fold(0.0_f64, f64::max);
     let ymin = if app.config.start_graphs_at_zero {
@@ -308,7 +333,7 @@ fn render_chart(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
             .style(Style::default().fg(t.sub))
             .data(&raw_pts),
         Dataset::default()
-            .name("wpm")
+            .name(unit_label(unit))
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(t.main))
@@ -357,7 +382,7 @@ fn render_stats(app: &App, frame: &mut Frame, area: Rect, r: &TestResult) {
         ),
         (
             "time".to_string(),
-            format!("{}s", fmt_num(r.duration_sec, false)),
+            format!("{}s", fmt_num(r.duration_sec, dec)),
         ),
         ("test".to_string(), test_descriptor(r)),
     ] {
@@ -399,24 +424,191 @@ fn test_descriptor(r: &TestResult) -> String {
     }
 }
 
-fn fmt_num(v: f64, force_dec: bool) -> String {
-    if force_dec || v.fract().abs() > f64::EPSILON {
-        format!("{v:.2}")
-    } else {
-        format!("{}", v.round() as i64)
-    }
-}
-
+/// A raw-wpm value in the configured unit, honoring the decimals toggle.
 fn fmt_speed(wpm: f64, unit: TypingSpeedUnit, force_dec: bool) -> String {
     fmt_num(unit.convert_from_wpm(wpm), force_dec)
 }
 
-fn unit_label(unit: TypingSpeedUnit) -> &'static str {
-    match unit {
-        TypingSpeedUnit::Wpm => "wpm",
-        TypingSpeedUnit::Cpm => "cpm",
-        TypingSpeedUnit::Wps => "wps",
-        TypingSpeedUnit::Cps => "cps",
-        TypingSpeedUnit::Wph => "wph",
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::config::{Config, Mode};
+    use crate::engine::{InputEvent, WordOutcome};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn mk_result() -> TestResult {
+        TestResult {
+            wpm: 60.0,
+            raw_wpm: 70.0,
+            acc: 96.43,
+            consistency: 70.55,
+            char_correct: 30,
+            char_incorrect: 1,
+            char_extra: 0,
+            char_missed: 0,
+            char_total: 31,
+            duration_sec: 15.0,
+            mode: Mode::Time,
+            mode2: "15".to_string(),
+            punctuation: false,
+            numbers: false,
+            language: "english".to_string(),
+            wpm_history: vec![60.0, 60.0],
+            raw_history: vec![70.0, 70.0],
+            failed: false,
+            fail_reason: None,
+            quote_source: None,
+            word_outcomes: vec![WordOutcome {
+                word_index: 0,
+                target: "hello".to_string(),
+                typed: "hello".to_string(),
+                preceding_word: None,
+                duration_ms: 600,
+                burst_wpm: 100.0,
+                correct: true,
+                had_error: false,
+                incorrect_keystrokes: 0,
+                char_correct: 5,
+                char_incorrect: 0,
+                char_extra: 0,
+                char_missed: 0,
+            }],
+            input_events: vec![],
+        }
+    }
+
+    fn event(kind: InputEventKind, value: Option<&str>, applied: bool, ms: u64) -> InputEvent {
+        InputEvent {
+            elapsed_ms: ms,
+            word_index: 0,
+            kind,
+            value: value.map(str::to_string),
+            correct: None,
+            applied,
+        }
+    }
+
+    fn draw(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_results(app, frame, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    /// Regression: blocked inputs (stop on error: letter, confidence max) are
+    /// in the event log for analytics but must not appear in the replay.
+    #[test]
+    fn replay_skips_blocked_events() {
+        let mut r = mk_result();
+        r.input_events = vec![
+            event(InputEventKind::Character, Some("h"), true, 0),
+            event(InputEventKind::Character, Some("x"), false, 100), // blocked letter
+            event(InputEventKind::Backspace, None, false, 200),      // confidence max
+            event(InputEventKind::Character, Some("i"), true, 300),
+        ];
+        assert_eq!(replay_typed_words(&r, u64::MAX), vec!["hi".to_string()]);
+        // an applied backspace still deletes in the replay
+        r.input_events[2].applied = true;
+        assert_eq!(replay_typed_words(&r, u64::MAX), vec!["i".to_string()]);
+    }
+
+    #[test]
+    fn results_screen_converts_speed_unit_everywhere() {
+        let cfg = Config {
+            typing_speed_unit: TypingSpeedUnit::Cpm,
+            ..Config::default()
+        };
+        let mut app = App::new(cfg);
+        app.result = Some(mk_result());
+        app.pb_info = crate::persistence::PbInfo {
+            is_pb: true,
+            previous_best: Some(50.0),
+        };
+        let text = draw(&app, 80, 24);
+        assert!(text.contains("300 cpm"), "headline must convert:\n{text}");
+        assert!(
+            text.contains("(prev 250)"),
+            "pb banner must convert the previous best:\n{text}"
+        );
+        assert!(text.contains("350"), "raw stat must convert:\n{text}");
+        assert!(
+            !text.contains("wpm"),
+            "no hardcoded wpm label (chart legend included):\n{text}"
+        );
+    }
+
+    #[test]
+    fn results_decimals_toggle_governs_display() {
+        let cfg = Config {
+            always_show_decimal_places: false,
+            ..Config::default()
+        };
+        let mut app = App::new(cfg);
+        let mut r = mk_result();
+        r.wpm = 81.37;
+        r.acc = 96.99;
+        r.duration_sec = 15.55;
+        app.result = Some(r);
+        let text = draw(&app, 80, 24);
+        assert!(text.contains("81 wpm"), "off rounds to integers:\n{text}");
+        assert!(text.contains("96% "), "off rounds acc:\n{text}");
+        assert!(text.contains("16s"), "off rounds duration:\n{text}");
+        assert!(!text.contains("81.37"), "off shows no decimals:\n{text}");
+
+        app.config.always_show_decimal_places = true;
+        let text = draw(&app, 80, 24);
+        assert!(text.contains("81.37 wpm"), "on forces decimals:\n{text}");
+        assert!(text.contains("96.99%"), "on forces acc decimals:\n{text}");
+        assert!(
+            text.contains("15.55s"),
+            "on forces duration decimals:\n{text}"
+        );
+        assert!(
+            text.contains("70.55%"),
+            "on forces consistency decimals:\n{text}"
+        );
+    }
+
+    #[test]
+    fn input_history_burst_uses_speed_unit() {
+        let cfg = Config {
+            typing_speed_unit: TypingSpeedUnit::Cpm,
+            ..Config::default()
+        };
+        let mut app = App::new(cfg);
+        app.result = Some(mk_result());
+        app.results_view = ResultsView::InputHistory;
+        let text = draw(&app, 100, 24);
+        assert!(
+            text.contains("500 cpm burst"),
+            "burst must convert and carry a unit label:\n{text}"
+        );
+    }
+
+    #[test]
+    fn tiny_results_fallback_converts_and_labels() {
+        let cfg = Config {
+            typing_speed_unit: TypingSpeedUnit::Cpm,
+            ..Config::default()
+        };
+        let mut app = App::new(cfg);
+        app.result = Some(mk_result());
+        let text = draw(&app, 20, 6); // too small for the full layout
+        assert!(text.contains("300 cpm"), "fallback must convert:\n{text}");
+        assert!(
+            text.contains("96% acc"),
+            "fallback honors decimals:\n{text}"
+        );
     }
 }

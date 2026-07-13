@@ -343,6 +343,7 @@ mod tests {
                 kind: InputEventKind::Character,
                 value: Some("w".to_string()),
                 correct: Some(true),
+                applied: true,
             }],
         }
     }

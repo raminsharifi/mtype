@@ -3,6 +3,7 @@
 //! The server binds to loopback only and embeds every frontend asset in the
 //! binary. No typing data leaves the machine.
 
+use crate::config::TypingSpeedUnit;
 use crate::persistence::StoredResult;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -22,6 +23,9 @@ const MS_PER_DAY: u128 = 86_400_000;
 #[serde(rename_all = "camelCase")]
 pub struct DashboardData {
     generated_at_ms: u64,
+    /// Display unit every speed value in this payload is already converted to.
+    speed_unit: String,
+    start_graphs_at_zero: bool,
     overview: Overview,
     timeline: Vec<TimelinePoint>,
     activity: Vec<ActivityDay>,
@@ -150,6 +154,9 @@ fn timestamp(value: u128) -> u64 {
 }
 
 pub fn build_data() -> Result<DashboardData> {
+    // read the config per request so palette changes show up on refresh
+    let config = crate::config::Config::load();
+    let unit = config.typing_speed_unit;
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -208,10 +215,14 @@ pub fn build_data() -> Result<DashboardData> {
         weak_word_count: wrong_words.len() as u64,
     };
     normalize_overview(&mut overview);
-    let insights = insights(&overview, &wrong_words, &slow_words, &history);
+    // insight thresholds run on raw WPM values; only their display text (and
+    // the payload conversion below) uses the configured unit
+    let insights = insights(&overview, &wrong_words, &slow_words, &history, unit);
 
-    Ok(DashboardData {
+    let mut data = DashboardData {
         generated_at_ms: timestamp(now_ms),
+        speed_unit: unit.as_str().to_string(),
+        start_graphs_at_zero: config.start_graphs_at_zero,
         overview,
         timeline,
         activity,
@@ -220,7 +231,43 @@ pub fn build_data() -> Result<DashboardData> {
         slow_words,
         confusions,
         insights,
-    })
+    };
+    convert_speeds(&mut data, unit);
+    Ok(data)
+}
+
+/// Convert every WPM-based value in the payload to the configured display
+/// unit, so the browser dashboard shows the same numbers as the TUI.
+fn convert_speeds(data: &mut DashboardData, unit: TypingSpeedUnit) {
+    if unit == TypingSpeedUnit::Wpm {
+        return;
+    }
+    let convert = |value: f64| rounded(unit.convert_from_wpm(value));
+    let overview = &mut data.overview;
+    overview.highest_wpm = convert(overview.highest_wpm);
+    overview.average_wpm = convert(overview.average_wpm);
+    overview.recent_wpm = convert(overview.recent_wpm);
+    overview.previous_wpm = convert(overview.previous_wpm);
+    overview.speed_leak = convert(overview.speed_leak);
+    for point in &mut data.timeline {
+        point.wpm = convert(point.wpm);
+        point.raw_wpm = convert(point.raw_wpm);
+    }
+    for mode in &mut data.modes {
+        mode.average_wpm = convert(mode.average_wpm);
+        mode.best_wpm = convert(mode.best_wpm);
+    }
+    for word in &mut data.wrong_words {
+        word.average_burst_wpm = convert(word.average_burst_wpm);
+    }
+    for word in &mut data.slow_words {
+        word.average_burst_wpm = convert(word.average_burst_wpm);
+    }
+}
+
+/// A WPM value rendered in the configured unit, e.g. "250.0 cpm".
+fn format_speed(wpm: f64, unit: TypingSpeedUnit) -> String {
+    format!("{:.1} {}", unit.convert_from_wpm(wpm), unit.as_str())
 }
 
 fn normalize_overview(overview: &mut Overview) {
@@ -435,6 +482,7 @@ fn insights(
     wrong_words: &[WrongWord],
     slow_words: &[SlowWord],
     history: &[StoredResult],
+    unit: TypingSpeedUnit,
 ) -> Vec<Insight> {
     if history.is_empty() {
         return vec![Insight {
@@ -451,7 +499,7 @@ fn insights(
             values.push(Insight {
                 kind: "gain",
                 title: format!("Recent speed is up {:.1}%", trend),
-                body: format!("Your last 10 tests average {:.1} wpm versus {:.1} before that. The gain is large enough to treat as a real direction, not one lucky test.", overview.recent_wpm, overview.previous_wpm),
+                body: format!("Your last 10 tests average {} versus {} before that. The gain is large enough to treat as a real direction, not one lucky test.", format_speed(overview.recent_wpm, unit), format_speed(overview.previous_wpm, unit)),
                 action: "Keep the same test mix for another 10 tests to confirm the gain.".to_string(),
             });
         } else if trend <= -2.0 {
@@ -468,14 +516,14 @@ fn insights(
         values.push(Insight {
             kind: "accuracy",
             title: "Accuracy is limiting usable speed".to_string(),
-            body: format!("Recent accuracy is {:.1}%. Raw speed is {:.1} wpm above net speed on average, so effort is being lost to corrections and invalid words.", overview.recent_accuracy, overview.speed_leak),
+            body: format!("Recent accuracy is {:.1}%. Raw speed is {} above net speed on average, so effort is being lost to corrections and invalid words.", overview.recent_accuracy, format_speed(overview.speed_leak, unit)),
             action: "Slow down slightly until accuracy stays above 97% for five tests.".to_string(),
         });
     } else if overview.speed_leak >= 6.0 {
         values.push(Insight {
             kind: "efficiency",
             title: "Raw speed is not converting cleanly".to_string(),
-            body: format!("You lose {:.1} wpm between raw and scored speed. This usually points to bursts followed by corrections rather than an absolute speed limit.", overview.speed_leak),
+            body: format!("You lose {} between raw and scored speed. This usually points to bursts followed by corrections rather than an absolute speed limit.", format_speed(overview.speed_leak, unit)),
             action: "Practice an even cadence and finish each word before accelerating.".to_string(),
         });
     }
@@ -500,8 +548,9 @@ fn insights(
             kind: "word",
             title: format!("'{}' is slowing your rhythm", word.word),
             body: format!(
-                "Its average burst is {:.1} wpm across {} clean attempts.",
-                word.average_burst_wpm, word.attempts
+                "Its average burst is {} across {} clean attempts.",
+                format_speed(word.average_burst_wpm, unit),
+                word.attempts
             ),
             action: "Run mtype practice slow --words 25.".to_string(),
         });
@@ -649,5 +698,94 @@ mod tests {
         assert!(json.get("testsCompleted").is_some());
         assert!(json.get("averageAccuracy").is_some());
         assert!(json.get("speedLeak").is_some());
+    }
+
+    fn sample_data() -> DashboardData {
+        DashboardData {
+            generated_at_ms: 0,
+            speed_unit: "cpm".to_string(),
+            start_graphs_at_zero: true,
+            overview: Overview {
+                highest_wpm: 100.0,
+                average_wpm: 80.0,
+                recent_wpm: 90.0,
+                previous_wpm: 70.0,
+                speed_leak: 4.0,
+                average_accuracy: 97.0,
+                ..Overview::default()
+            },
+            timeline: vec![TimelinePoint {
+                timestamp_ms: 1,
+                wpm: 60.0,
+                raw_wpm: 66.0,
+                accuracy: 97.0,
+                consistency: 70.0,
+                mode: "time".to_string(),
+                mode2: "30".to_string(),
+                language: "english".to_string(),
+            }],
+            activity: Vec::new(),
+            modes: vec![ModeSummary {
+                mode: "time 30".to_string(),
+                tests: 1,
+                average_wpm: 60.0,
+                best_wpm: 60.0,
+                average_accuracy: 97.0,
+            }],
+            wrong_words: vec![WrongWord {
+                word: "the".to_string(),
+                attempts: 4,
+                error_attempts: 2,
+                missed_attempts: 1,
+                error_rate: 50.0,
+                average_burst_wpm: 40.0,
+                last_seen_ms: 1,
+                variants: Vec::new(),
+            }],
+            slow_words: vec![SlowWord {
+                word: "queue".to_string(),
+                attempts: 2,
+                average_burst_wpm: 50.0,
+            }],
+            confusions: Vec::new(),
+            insights: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn speeds_convert_to_the_configured_unit() {
+        let mut data = sample_data();
+        convert_speeds(&mut data, TypingSpeedUnit::Cpm);
+        assert_eq!(data.overview.recent_wpm, 450.0);
+        assert_eq!(data.overview.highest_wpm, 500.0);
+        assert_eq!(data.overview.speed_leak, 20.0);
+        assert_eq!(data.timeline[0].wpm, 300.0);
+        assert_eq!(data.timeline[0].raw_wpm, 330.0);
+        assert_eq!(data.timeline[0].accuracy, 97.0, "accuracy is not a speed");
+        assert_eq!(data.modes[0].best_wpm, 300.0);
+        assert_eq!(data.wrong_words[0].average_burst_wpm, 200.0);
+        assert_eq!(data.slow_words[0].average_burst_wpm, 250.0);
+    }
+
+    #[test]
+    fn wpm_unit_leaves_values_untouched() {
+        let mut data = sample_data();
+        convert_speeds(&mut data, TypingSpeedUnit::Wpm);
+        assert_eq!(data.overview.recent_wpm, 90.0);
+        assert_eq!(data.timeline[0].wpm, 60.0);
+    }
+
+    #[test]
+    fn payload_carries_unit_and_graph_baseline_settings() {
+        let json = serde_json::to_value(sample_data()).unwrap();
+        assert_eq!(json["speedUnit"], "cpm");
+        assert_eq!(json["startGraphsAtZero"], true);
+    }
+
+    #[test]
+    fn insight_speeds_render_in_the_configured_unit() {
+        assert_eq!(format_speed(50.0, TypingSpeedUnit::Cpm), "250.0 cpm");
+        assert_eq!(format_speed(60.0, TypingSpeedUnit::Wps), "1.0 wps");
+        assert_eq!(format_speed(72.5, TypingSpeedUnit::Wpm), "72.5 wpm");
     }
 }

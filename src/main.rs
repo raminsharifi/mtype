@@ -28,7 +28,7 @@ mod wordgen;
 use anyhow::Result;
 use app::App;
 use clap::{Parser, Subcommand};
-use config::{Config, Difficulty, Mode, PracticeMode};
+use config::{Config, Difficulty, Mode, PracticeMode, SessionOverrides};
 use rand::SeedableRng;
 use std::path::PathBuf;
 
@@ -134,43 +134,64 @@ enum DataCommands {
     },
 }
 
-fn apply_cli(cfg: &mut Config, cli: &Cli) {
+/// Apply CLI flags to the loaded config, recording which fields were touched.
+/// Flags set the config for this run only: the returned `SessionOverrides` is
+/// used by `App` to keep the flagged fields out of any config.toml save.
+fn apply_cli(cfg: &mut Config, cli: &Cli) -> SessionOverrides {
+    let mut o = SessionOverrides::default();
     if let Some(m) = cli.mode.as_deref().and_then(Mode::from_str_opt) {
         cfg.mode = m;
+        o.mode = true;
     }
     if let Some(t) = cli.time {
         cfg.time = t;
         cfg.mode = Mode::Time;
+        o.time = true;
+        o.mode = true;
     }
     if let Some(w) = cli.words {
         cfg.words = w;
         cfg.mode = Mode::Words;
+        o.words = true;
+        o.mode = true;
     }
     if cli.punctuation {
         cfg.punctuation = true;
+        o.punctuation = true;
     }
     if cli.numbers {
         cfg.numbers = true;
+        o.numbers = true;
     }
     if let Some(d) = cli.difficulty.as_deref().and_then(Difficulty::from_str_opt) {
         cfg.difficulty = d;
+        o.difficulty = true;
     }
     if let Some(text) = cli.custom.as_ref() {
         cfg.custom_text = text.clone();
         cfg.mode = Mode::Custom;
+        o.custom_text = true;
+        o.mode = true;
     }
     if let Some(id) = cli.quote_id {
+        // quote_id itself is #[serde(skip)]; only the implied mode can leak
         cfg.quote_id = Some(id);
         cfg.mode = Mode::Quote;
+        o.mode = true;
     }
     if let Some(lang) = cli.language.as_ref() {
         cfg.language = lang.clone();
+        o.language = true;
     }
     if let Some(Commands::Practice { kind, words }) = &cli.command {
         cfg.mode = Mode::Practice;
         cfg.practice_mode = PracticeMode::from_str_opt(kind).unwrap_or_default();
         cfg.practice_word_count = (*words).max(1);
+        o.mode = true;
+        o.practice_mode = true;
+        o.practice_word_count = true;
     }
+    o
 }
 
 fn main() -> Result<()> {
@@ -207,8 +228,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut config = Config::load();
-    apply_cli(&mut config, &cli);
+    // keep the pristine on-disk config: CLI flags are session-only, so saves
+    // from within the app must not persist the flag-overridden fields
+    let disk_config = Config::load();
+    let mut config = disk_config.clone();
+    let overrides = apply_cli(&mut config, &cli);
 
     // warn (don't fail) if an explicitly requested language isn't available
     // offline - it will fall back to the base English list.
@@ -230,7 +254,7 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = tui::init()?;
-    let mut app = App::new(config);
+    let mut app = App::new_session(config, disk_config, overrides);
     // `mtype stats` opens straight to the progress screen
     if matches!(cli.command, Some(Commands::Stats { command: None })) {
         app.open_stats();

@@ -106,6 +106,7 @@ fn render_title(app: &App, frame: &mut Frame, area: Rect, p: &Profile) {
 fn render_summary(app: &App, frame: &mut Frame, area: Rect, p: &Profile) {
     let t = &app.theme;
     let unit = app.config.typing_speed_unit;
+    let dec = app.config.always_show_decimal_places;
     let conv = |w: f64| unit.convert_from_wpm(w);
 
     let cols =
@@ -115,33 +116,53 @@ fn render_summary(app: &App, frame: &mut Frame, area: Rect, p: &Profile) {
     let left = vec![
         stat_line(t, "time typing", &secs_to_hms(p.time_typing_sec)),
         stat_line(t, "estimated words", &p.estimated_words.to_string()),
-        stat_line(t, &format!("highest {u}"), &fmt(conv(p.highest_wpm))),
-        stat_line(t, &format!("average {u}"), &fmt(conv(p.avg_wpm))),
+        stat_line(
+            t,
+            &format!("highest {u}"),
+            &fmt_num(conv(p.highest_wpm), dec),
+        ),
+        stat_line(t, &format!("average {u}"), &fmt_num(conv(p.avg_wpm), dec)),
         stat_line(
             t,
             &format!("avg {u} (last 10)"),
-            &fmt(conv(p.avg_wpm_last10)),
+            &fmt_num(conv(p.avg_wpm_last10), dec),
         ),
-        stat_line(t, &format!("highest raw {u}"), &fmt(conv(p.highest_raw))),
-        stat_line(t, &format!("average raw {u}"), &fmt(conv(p.avg_raw))),
+        stat_line(
+            t,
+            &format!("highest raw {u}"),
+            &fmt_num(conv(p.highest_raw), dec),
+        ),
+        stat_line(
+            t,
+            &format!("average raw {u}"),
+            &fmt_num(conv(p.avg_raw), dec),
+        ),
     ];
     let right = vec![
-        stat_line(t, "highest acc", &format!("{}%", fmt(p.highest_acc))),
-        stat_line(t, "average acc", &format!("{}%", fmt(p.avg_acc))),
+        stat_line(
+            t,
+            "highest acc",
+            &format!("{}%", fmt_accuracy(p.highest_acc, dec)),
+        ),
+        stat_line(
+            t,
+            "average acc",
+            &format!("{}%", fmt_accuracy(p.avg_acc, dec)),
+        ),
         stat_line(
             t,
             "avg acc (last 10)",
-            &format!("{}%", fmt(p.avg_acc_last10)),
+            &format!("{}%", fmt_accuracy(p.avg_acc_last10, dec)),
         ),
         stat_line(
             t,
             "highest consistency",
-            &format!("{}%", fmt(p.highest_consistency)),
+            &format!("{}%", fmt_num(p.highest_consistency, dec)),
         ),
         stat_line(
             t,
             "average consistency",
-            &format!("{}%", fmt(p.avg_consistency)),
+            &format!("{}%", fmt_num(p.avg_consistency, dec)),
         ),
     ];
 
@@ -322,6 +343,7 @@ fn render_recent(app: &App, frame: &mut Frame, area: Rect, p: &Profile) {
         return;
     }
     let unit = app.config.typing_speed_unit;
+    let dec = app.config.always_show_decimal_places;
     let u = unit_label(unit);
     let conv = |w: f64| unit.convert_from_wpm(w);
 
@@ -337,10 +359,10 @@ fn render_recent(app: &App, frame: &mut Frame, area: Rect, p: &Profile) {
         lines.push(Line::from(Span::styled(
             format!(
                 "                {:>6}  {:>4}  {:>3}%  {:>3}%  {:<14}  {:>2} {}",
-                fmt(conv(r.wpm)),
-                fmt(conv(r.raw_wpm)),
-                fmt(r.acc),
-                fmt(r.consistency),
+                fmt_num(conv(r.wpm), dec),
+                fmt_num(conv(r.raw_wpm), dec),
+                fmt_accuracy(r.acc, dec),
+                fmt_num(r.consistency, dec),
                 truncate(&test, 14),
                 d,
                 month_abbr(m),
@@ -418,20 +440,90 @@ fn secs_to_hms(secs: f64) -> String {
     }
 }
 
-fn fmt(v: f64) -> String {
-    if v.fract().abs() < 1e-9 {
-        format!("{}", v.round() as i64)
-    } else {
+/// Speed/accuracy/consistency display shared by the results and stats screens:
+/// `always_show_decimal_places` ON always shows two decimals, OFF rounds to an
+/// integer (upstream `Format.typingSpeed` / `Format.percentage`).
+pub(crate) fn fmt_num(v: f64, force_dec: bool) -> String {
+    if force_dec {
         format!("{v:.2}")
+    } else {
+        format!("{}", v.round() as i64)
     }
 }
 
-fn unit_label(unit: TypingSpeedUnit) -> &'static str {
+/// Accuracy uses floor when decimals are hidden, matching upstream's
+/// `Format.accuracy`; fixed decimals still use normal two-place rounding.
+pub(crate) fn fmt_accuracy(v: f64, force_dec: bool) -> String {
+    if force_dec {
+        format!("{v:.2}")
+    } else {
+        format!("{}", v.floor() as i64)
+    }
+}
+
+pub(crate) fn unit_label(unit: TypingSpeedUnit) -> &'static str {
     match unit {
         TypingSpeedUnit::Wpm => "wpm",
         TypingSpeedUnit::Cpm => "cpm",
         TypingSpeedUnit::Wps => "wps",
         TypingSpeedUnit::Cps => "cps",
         TypingSpeedUnit::Wph => "wph",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    #[test]
+    fn fmt_num_honors_decimals_toggle() {
+        // OFF rounds to an integer (upstream Format.typingSpeed)
+        assert_eq!(fmt_num(81.37, false), "81");
+        assert_eq!(fmt_num(96.5, false), "97");
+        assert_eq!(fmt_num(80.0, false), "80");
+        // ON always shows two decimals
+        assert_eq!(fmt_num(81.37, true), "81.37");
+        assert_eq!(fmt_num(80.0, true), "80.00");
+        assert_eq!(fmt_accuracy(96.99, false), "96");
+        assert_eq!(fmt_accuracy(96.999, true), "97.00");
+    }
+
+    #[test]
+    fn stats_screen_honors_decimals_toggle() {
+        let mut app = App::new(Config::default());
+        app.profile = Some(Profile {
+            completed: 1,
+            started: 1,
+            highest_wpm: 80.0,
+            highest_acc: 100.0,
+            ..Profile::default()
+        });
+
+        let draw = |app: &App| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 36)).unwrap();
+            terminal
+                .draw(|frame| render_stats(app, frame, frame.area()))
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            let mut s = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    s.push_str(buf[(x, y)].symbol());
+                }
+                s.push('\n');
+            }
+            s
+        };
+
+        let text = draw(&app);
+        assert!(!text.contains("80.00"), "off shows integers:\n{text}");
+
+        app.config.always_show_decimal_places = true;
+        let text = draw(&app);
+        assert!(text.contains("80.00"), "on forces decimals:\n{text}");
+        assert!(text.contains("100.00%"), "on forces acc decimals:\n{text}");
     }
 }

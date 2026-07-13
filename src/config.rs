@@ -208,6 +208,69 @@ impl Default for Config {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Session-only CLI overrides
+// ---------------------------------------------------------------------------
+
+/// Tracks which config fields were set by CLI flags for this run only.
+///
+/// The CLI contract (see the `Cli` doc in main.rs) is that flags are not
+/// persisted: when the config is saved (any palette action does), fields still
+/// marked here keep their pristine on-disk value. An explicit in-app change to
+/// a field clears its mark, so palette changes persist as usual.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SessionOverrides {
+    pub mode: bool,
+    pub time: bool,
+    pub words: bool,
+    pub custom_text: bool,
+    pub language: bool,
+    pub punctuation: bool,
+    pub numbers: bool,
+    pub difficulty: bool,
+    pub practice_mode: bool,
+    pub practice_word_count: bool,
+}
+
+impl SessionOverrides {
+    /// The config to persist: live values, except session-only fields, which
+    /// keep the value loaded from disk at startup.
+    pub fn merge_for_save(&self, current: &Config, disk: &Config) -> Config {
+        let mut merged = current.clone();
+        if self.mode {
+            merged.mode = disk.mode;
+        }
+        if self.time {
+            merged.time = disk.time;
+        }
+        if self.words {
+            merged.words = disk.words;
+        }
+        if self.custom_text {
+            merged.custom_text = disk.custom_text.clone();
+        }
+        if self.language {
+            merged.language = disk.language.clone();
+        }
+        if self.punctuation {
+            merged.punctuation = disk.punctuation;
+        }
+        if self.numbers {
+            merged.numbers = disk.numbers;
+        }
+        if self.difficulty {
+            merged.difficulty = disk.difficulty;
+        }
+        if self.practice_mode {
+            merged.practice_mode = disk.practice_mode;
+        }
+        if self.practice_word_count {
+            merged.practice_word_count = disk.practice_word_count;
+        }
+        merged
+    }
+}
+
 impl Config {
     pub fn config_path() -> Result<PathBuf> {
         let dirs = directories::ProjectDirs::from("com", "monkeytype", "mtype")
@@ -236,5 +299,54 @@ impl Config {
         let s = toml::to_string_pretty(self).context("serializing config")?;
         std::fs::write(&path, s).with_context(|| format!("writing config {}", path.display()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CLI flags are session-only: a save keeps the on-disk value for every
+    /// overridden field while persisting genuine in-app changes.
+    #[test]
+    fn session_overrides_keep_disk_values_on_save() {
+        let disk = Config::default(); // mode=time, time=30, difficulty=normal
+        let mut current = disk.clone();
+        // simulate `mtype --time 15 --difficulty master`
+        current.time = 15;
+        current.difficulty = Difficulty::Master;
+        // ...then an unrelated in-app change
+        current.theme = "dracula".to_string();
+        let overrides = SessionOverrides {
+            mode: true,
+            time: true,
+            difficulty: true,
+            ..SessionOverrides::default()
+        };
+
+        let merged = overrides.merge_for_save(&current, &disk);
+        assert_eq!(merged.time, 30, "session-only --time must not persist");
+        assert_eq!(merged.difficulty, Difficulty::Normal);
+        assert_eq!(merged.mode, Mode::Time);
+        assert_eq!(merged.theme, "dracula", "palette change must persist");
+    }
+
+    /// Clearing a field's override (an explicit palette change) lets the live
+    /// value persist again.
+    #[test]
+    fn cleared_override_persists_live_value() {
+        let disk = Config::default();
+        let mut current = disk.clone();
+        current.time = 60; // palette "time > 60" after `mtype --time 15`
+        let mut overrides = SessionOverrides {
+            mode: true,
+            time: true,
+            ..SessionOverrides::default()
+        };
+        overrides.time = false;
+        overrides.mode = false;
+
+        let merged = overrides.merge_for_save(&current, &disk);
+        assert_eq!(merged.time, 60);
     }
 }

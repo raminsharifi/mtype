@@ -126,6 +126,10 @@ pub enum InputEventKind {
     WordBackspace,
 }
 
+fn default_applied() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputEvent {
     /// Milliseconds since the first character of the test.
@@ -136,6 +140,13 @@ pub struct InputEvent {
     pub value: Option<String>,
     /// Whether the attempted character/commit matched its target.
     pub correct: Option<bool>,
+    /// Whether the event actually changed the typed text. Blocked inputs
+    /// (stop on error: letter, confidence max backspaces, rejected commits)
+    /// are logged because they count as keystrokes for accuracy, but the
+    /// replay must skip them - the test never displayed them. Records from
+    /// before this field existed default to applied.
+    #[serde(default = "default_applied")]
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +268,14 @@ impl Engine {
         self.state
     }
 
+    /// Adopt the live config mid-test so palette changes that don't restart
+    /// (freedom mode, strict space, ...) apply immediately, as upstream applies
+    /// settings to the running test. Word generation keeps its own snapshot;
+    /// every generation-relevant setting restarts the test instead.
+    pub fn sync_config(&mut self, config: Config) {
+        self.config = config;
+    }
+
     pub fn is_zen(&self) -> bool {
         self.config.mode == Mode::Zen
     }
@@ -294,6 +313,7 @@ impl Engine {
         kind: InputEventKind,
         value: Option<String>,
         correct: Option<bool>,
+        applied: bool,
     ) {
         let Some(start) = self.start_ms else { return };
         self.input_events.push(InputEvent {
@@ -302,6 +322,7 @@ impl Engine {
             kind,
             value,
             correct,
+            applied,
         });
     }
 
@@ -322,7 +343,7 @@ impl Engine {
             round_to_2(calculate_wpm(raw_len as f64, duration_ms as f64 / 1000.0))
         };
         let incorrect_keystrokes = self.word_error_counts.get(index).copied().unwrap_or(0);
-        let correct = typed == target;
+        let correct = words_equal(typed, target, self.config.lazy_mode);
         WordOutcome {
             word_index: index,
             target: target.to_string(),
@@ -368,8 +389,17 @@ impl Engine {
             return;
         }
         if c == ' ' {
-            self.commit_word(now_ms);
-            return;
+            // strict space: a space at the start of a word is not a commit -
+            // it falls through and is inserted into the word as a single
+            // incorrect character (`input-controller.ts`: handleSpace returns
+            // on empty input, then strictSpace inserts the space as a char).
+            let strict_insert = !self.is_zen()
+                && (self.config.strict_space || self.config.difficulty != Difficulty::Normal)
+                && self.typed.get(self.active).is_none_or(|w| w.is_empty());
+            if !strict_insert {
+                self.commit_word(now_ms);
+                return;
+            }
         }
         // ignore other control chars
         if c.is_control() {
@@ -395,24 +425,25 @@ impl Engine {
             self.word_error_counts[self.active] =
                 self.word_error_counts[self.active].saturating_add(1);
         }
+        let capped = pos > target.chars().count() + 20;
+        let blocked_letter = self.config.stop_on_error == StopOnError::Letter && !correct;
         self.log_input(
             now_ms,
             InputEventKind::Character,
             Some(c.to_string()),
             Some(correct),
+            !(capped || blocked_letter),
         );
 
-        // hide extra letters: block typing past the word
-        if self.config.hide_extra_letters && target_char.is_none() && !self.is_zen() {
-            return;
-        }
+        // hide extra letters is purely visual (handled by the renderer):
+        // extras still enter the input and are scored as errors, as upstream.
         // cap runaway extra letters
-        if pos > target.chars().count() + 20 {
+        if capped {
             return;
         }
         // stop on error (letter): block an incorrect char from being inserted,
         // but still record it as an incorrect keystroke.
-        if self.config.stop_on_error == StopOnError::Letter && !correct {
+        if blocked_letter {
             self.keystrokes.push(Keystroke {
                 ms: now_ms,
                 correct: false,
@@ -459,9 +490,12 @@ impl Engine {
             .map(String::as_str)
             .unwrap_or("");
         let target = self.target(last);
+        // quick end applies to every finite mode and only while stop on error
+        // is off (`fail-or-finish.ts::checkIfFinished`: shouldQuickEnd =
+        // quickEnd && full length && stopOnError === "off").
         let complete = words_equal(typed, target, self.config.lazy_mode)
-            || (self.config.mode == Mode::Words
-                && self.config.quick_end
+            || (self.config.quick_end
+                && self.config.stop_on_error == StopOnError::Off
                 && typed.chars().count() >= target.chars().count());
         if matches!(
             self.config.mode,
@@ -479,35 +513,62 @@ impl Engine {
             return;
         }
         let current = self.typed.get(self.active).cloned().unwrap_or_default();
-        if current.is_empty() && !self.config.strict_space {
-            // committing an empty word does nothing (no double-space skip)
+        if current.is_empty() {
+            // committing an empty word does nothing (no double-space skip);
+            // upstream handleSpace returns on empty input - strict space
+            // instead inserts the space as a character (handled in type_char)
             return;
         }
 
         let target = self.active_target();
         let word_correct = words_equal(&current, &target, self.config.lazy_mode);
-        self.log_input(now_ms, InputEventKind::Commit, None, Some(word_correct));
+        // a wrong-word commit is rejected by expert/master (test fails) and by
+        // stop-on-error (word); either way it never advanced the test
+        let commit_applies = word_correct
+            || (self.config.stop_on_error != StopOnError::Word
+                && !matches!(
+                    self.config.difficulty,
+                    Difficulty::Expert | Difficulty::Master
+                ));
+        self.log_input(
+            now_ms,
+            InputEventKind::Commit,
+            None,
+            Some(word_correct),
+            commit_applies,
+        );
 
-        // strict space / stop-on-error(word): if the word is wrong, a space does
-        // not commit - it is rejected (and counts as an incorrect keystroke).
+        // expert/master: submitting an imperfect word fails the test, even
+        // when stop on error is set (`fail-or-finish.ts`: "we want expert mode
+        // to fail no matter if confidence or stop on error is on"; master
+        // fails on any incorrect keypress, including the committing space).
+        if !word_correct
+            && matches!(
+                self.config.difficulty,
+                Difficulty::Expert | Difficulty::Master
+            )
+        {
+            self.keystrokes.push(Keystroke {
+                ms: now_ms,
+                correct: false,
+                letter: false,
+            });
+            self.fail(if self.config.difficulty == Difficulty::Master {
+                "master: incorrect key"
+            } else {
+                "expert: imperfect word submitted"
+            });
+            return;
+        }
+
+        // stop-on-error(word): if the word is wrong, a space does not commit -
+        // it is rejected (and counts as an incorrect keystroke).
         if self.config.stop_on_error == StopOnError::Word && !word_correct {
             self.keystrokes.push(Keystroke {
                 ms: now_ms,
                 correct: false,
                 letter: false,
             });
-            return;
-        }
-
-        // expert: submitting an imperfect word fails the test
-        if self.config.difficulty == Difficulty::Expert && !word_correct {
-            self.keystrokes.push(Keystroke {
-                ms: now_ms,
-                correct: false,
-                letter: false,
-            });
-            self.state = State::Failed;
-            self.fail_reason = Some("expert: imperfect word submitted".to_string());
             return;
         }
 
@@ -564,6 +625,7 @@ impl Engine {
         if matches!(self.state, State::Finished | State::Failed) {
             return;
         }
+        let blocked = self.config.confidence_mode == ConfidenceMode::Max;
         self.log_input(
             now_ms,
             if ctrl {
@@ -573,8 +635,9 @@ impl Engine {
             },
             None,
             None,
+            !blocked,
         );
-        if self.config.confidence_mode == ConfidenceMode::Max {
+        if blocked {
             return; // no backspacing at all
         }
         self.ensure_slot(self.active);
@@ -612,8 +675,9 @@ impl Engine {
         if self.state != State::Running {
             return;
         }
-        // time mode: end on the clock
-        if self.config.mode == Mode::Time {
+        // time mode: end on the clock (time 0 is an infinite test - upstream
+        // only ends the test when the configured time is > 0)
+        if self.config.mode == Mode::Time && self.config.time > 0 {
             if let Some(start) = self.start_ms {
                 if now_ms.saturating_sub(start) >= (self.config.time as u128) * 1000 {
                     self.finish(now_ms);
@@ -631,10 +695,14 @@ impl Engine {
         }
         let cc = self.char_counts(true);
         if let Some(min) = self.config.min_wpm {
-            let wpm = calculate_wpm(cc.correct_word as f64, elapsed);
-            if wpm < min as f64 {
-                self.fail("min wpm not met");
-                return;
+            // upstream never fails min speed until the user is past the 4th
+            // word (`test-timer.ts::checkIfFailed`: activeWordIndex > 3)
+            if self.active > 3 {
+                let wpm = calculate_wpm(cc.correct_word as f64, elapsed);
+                if wpm < min as f64 {
+                    self.fail("min wpm not met");
+                    return;
+                }
             }
         }
         if let Some(min) = self.config.min_acc {
@@ -658,7 +726,8 @@ impl Engine {
         self.fail_reason = Some(reason.to_string());
     }
 
-    /// Bail out / finish a zen test (shift+enter).
+    /// Bail out (enter / shift+enter): finish a zen or endless (time 0 /
+    /// words 0) test with a normal, saveable result.
     pub fn bail(&mut self, now_ms: u128) {
         if self.state == State::Running {
             self.finish(now_ms);
@@ -781,9 +850,10 @@ impl Engine {
         self.elapsed_secs(now_ms)
     }
 
-    /// Remaining seconds (time mode) for the timer display.
+    /// Remaining seconds (time mode) for the timer display. `None` for other
+    /// modes and for time 0, which is an infinite test (the UI counts up).
     pub fn time_left(&self, now_ms: u128) -> Option<u32> {
-        if self.config.mode != Mode::Time {
+        if self.config.mode != Mode::Time || self.config.time == 0 {
             return None;
         }
         let elapsed = match self.start_ms {
@@ -1039,6 +1109,38 @@ mod tests {
         type_str(&mut e, "hel", 0);
         e.backspace(false, 400);
         assert_eq!(e.typed[0], "hel");
+        // the blocked backspace is logged for analytics but marked unapplied,
+        // so the results replay never deletes a character the test kept
+        let last = e.result().input_events.last().cloned().unwrap();
+        assert!(matches!(last.kind, InputEventKind::Backspace));
+        assert!(!last.applied);
+    }
+
+    #[test]
+    fn stop_on_error_letter_logs_blocked_chars_as_unapplied() {
+        let mut c = words_cfg(1);
+        c.stop_on_error = StopOnError::Letter;
+        let mut e = engine_with(&["hello"], c);
+        e.type_char('h', 0);
+        e.type_char('x', 100); // blocked: never enters the typed text
+        e.type_char('x', 200); // blocked again
+        assert_eq!(e.typed[0], "h");
+        e.bail(300);
+        let events = e.result().input_events;
+        let applied: Vec<bool> = events.iter().map(|event| event.applied).collect();
+        assert_eq!(applied, vec![true, false, false]);
+        // corrects are still recorded so accuracy/analytics see the keystrokes
+        assert_eq!(events[1].correct, Some(false));
+    }
+
+    #[test]
+    fn normal_typing_events_are_applied() {
+        let mut e = engine_with(&["the", "cat"], words_cfg(2));
+        type_str(&mut e, "txe", 0); // includes a plain (inserted) error
+        e.backspace(false, 300);
+        e.type_char('e', 400);
+        e.type_char(' ', 500);
+        assert!(e.result().input_events.iter().all(|event| event.applied));
     }
 
     #[test]
@@ -1103,12 +1205,218 @@ mod tests {
     fn min_wpm_fails_slow_typing() {
         let mut c = words_cfg(50);
         c.min_wpm = Some(100);
+        let mut e = engine_with(&["the", "cat", "dog", "run", "far"], c);
+        // commit four words at a crawl (1s per keystroke), landing on word 5
+        let mut t = 0u128;
+        for ch in "the cat dog run ".chars() {
+            e.type_char(ch, t);
+            t += 1000;
+        }
+        e.tick(t); // past the 4th word and far below 100 wpm
+        assert_eq!(e.state(), State::Failed);
+    }
+
+    #[test]
+    fn min_wpm_never_fails_before_the_fifth_word() {
+        let mut c = words_cfg(50);
+        c.min_wpm = Some(100);
+        let mut e = engine_with(&["the", "cat", "dog", "run", "far"], c);
+        // upstream test-timer.ts requires activeWordIndex > 3 before failing
+        let mut t = 0u128;
+        for ch in "the cat dog ".chars() {
+            e.type_char(ch, t);
+            t += 1000;
+        }
+        e.tick(t); // still on word 4 -> start-up grace, no fail
+        assert_eq!(e.state(), State::Running);
+    }
+
+    #[test]
+    fn lazy_mode_word_outcome_counts_as_correct() {
+        let mut c = words_cfg(2);
+        c.lazy_mode = true;
+        let mut e = engine_with(&["años", "cat"], c);
+        type_str(&mut e, "anos", 0); // lazily correct for "años"
+        e.type_char(' ', 400);
+        type_str(&mut e, "cat", 500);
+        assert_eq!(e.state(), State::Finished);
+        let r = e.result();
+        assert_eq!(r.acc, 100.0);
+        assert!(r.word_outcomes[0].correct);
+        assert!(!r.word_outcomes[0].had_error);
+    }
+
+    #[test]
+    fn master_difficulty_fails_on_premature_space() {
+        let mut c = words_cfg(5);
+        c.difficulty = Difficulty::Master;
+        let mut e = engine_with(&["hello", "world", "foo", "bar", "baz"], c);
+        type_str(&mut e, "he", 0); // correct prefix
+        e.type_char(' ', 300); // incorrect commit keypress -> master fails
+        assert_eq!(e.state(), State::Failed);
+    }
+
+    #[test]
+    fn expert_fails_even_with_stop_on_error_word() {
+        let mut c = words_cfg(5);
+        c.difficulty = Difficulty::Expert;
+        c.stop_on_error = StopOnError::Word;
+        let mut e = engine_with(&["hello", "world", "foo", "bar", "baz"], c);
+        type_str(&mut e, "helo", 0); // missing an l
+        e.type_char(' ', 500); // expert fails despite stop-on-error(word)
+        assert_eq!(e.state(), State::Failed);
+    }
+
+    #[test]
+    fn quick_end_applies_in_quote_mode() {
+        let mut c = words_cfg(1);
+        c.quick_end = true;
+        let mut e = engine_with(&["hi"], c);
+        e.config.mode = Mode::Quote;
+        type_str(&mut e, "hx", 0); // last word at full length, with an error
+        assert_eq!(e.state(), State::Finished);
+    }
+
+    #[test]
+    fn quick_end_respects_stop_on_error_word() {
+        let mut c = words_cfg(1);
+        c.quick_end = true;
+        c.stop_on_error = StopOnError::Word;
+        let mut e = engine_with(&["hi"], c);
+        type_str(&mut e, "hx", 0); // full length but wrong: must be fixed
+        assert_eq!(e.state(), State::Running);
+    }
+
+    #[test]
+    fn min_burst_fails_after_a_slow_committed_word() {
+        let mut c = words_cfg(3);
+        c.min_burst = Some(100);
         let mut e = engine_with(&["the", "cat", "dog"], c);
+        type_str(&mut e, "the", 0);
+        e.type_char(' ', 300); // burst 160 wpm - fine
+        e.tick(300);
+        assert_eq!(e.state(), State::Running);
+
+        // the next committed word is far too slow
+        e.type_char('c', 1000);
+        e.type_char('a', 3000);
+        e.type_char('t', 5000);
+        e.type_char(' ', 7000);
+        e.tick(7000);
+        assert_eq!(e.state(), State::Failed);
+    }
+
+    #[test]
+    fn strict_space_inserts_space_char_instead_of_skipping() {
+        let mut c = words_cfg(2);
+        c.strict_space = true;
+        let mut e = engine_with(&["the", "cat"], c);
+        type_str(&mut e, "the", 0);
+        e.type_char(' ', 300); // commit "the"
+        e.type_char(' ', 400); // double space: one incorrect char, no skip
+        assert_eq!(e.active, 1);
+        assert_eq!(e.typed[1], " ");
+        assert_eq!(e.state(), State::Running);
+        // recoverable: backspace the stray space and finish normally
+        e.backspace(false, 500);
+        type_str(&mut e, "cat", 600);
+        assert_eq!(e.state(), State::Finished);
+        let r = e.result();
+        assert!(r.acc < 100.0); // the stray space cost one incorrect keystroke
+    }
+
+    #[test]
+    fn strict_space_double_space_does_not_fail_expert() {
+        let mut c = words_cfg(2);
+        c.difficulty = Difficulty::Expert;
+        c.strict_space = true;
+        let mut e = engine_with(&["the", "cat"], c);
+        type_str(&mut e, "the", 0);
+        e.type_char(' ', 300);
+        e.type_char(' ', 400); // upstream: an incorrect char, not a commit
+        assert_eq!(e.state(), State::Running);
+    }
+
+    #[test]
+    fn strict_space_and_difficulty_insert_a_leading_space() {
+        let mut strict = words_cfg(2);
+        strict.strict_space = true;
+        let mut e = engine_with(&["the", "cat"], strict);
+        e.type_char(' ', 0);
+        assert_eq!(e.state(), State::Running);
+        assert_eq!(e.typed[0], " ");
+
+        let mut expert = words_cfg(2);
+        expert.difficulty = Difficulty::Expert;
+        let mut e = engine_with(&["the", "cat"], expert);
+        e.type_char(' ', 0);
+        assert_eq!(e.state(), State::Running);
+        assert_eq!(e.typed[0], " ");
+
+        let mut master = words_cfg(2);
+        master.difficulty = Difficulty::Master;
+        let mut e = engine_with(&["the", "cat"], master);
+        e.type_char(' ', 0);
+        assert_eq!(e.state(), State::Failed);
+    }
+
+    #[test]
+    fn hide_extra_letters_still_scores_extras() {
+        let mut c = words_cfg(2);
+        c.hide_extra_letters = true;
+        let mut e = engine_with(&["the", "cat"], c);
+        type_str(&mut e, "thexx", 0); // extras hidden visually, scored normally
+        e.type_char(' ', 500);
+        type_str(&mut e, "cat", 600);
+        assert_eq!(e.state(), State::Finished);
+        let r = e.result();
+        assert_eq!(r.char_extra, 2);
+        assert!(r.acc < 100.0);
+        assert!(!r.word_outcomes[0].correct);
+    }
+
+    #[test]
+    fn time_zero_is_infinite_until_bailed() {
+        let c = Config {
+            mode: Mode::Time,
+            time: 0,
+            ..Config::default()
+        };
+        let mut e = engine_with(&["the", "cat", "dog", "run"], c);
         e.type_char('t', 0);
-        e.type_char('h', 1000);
-        e.type_char('e', 2000);
-        e.type_char(' ', 3000);
-        e.tick(4000); // very slow -> below 100 wpm
+        assert_eq!(e.time_left(0), None); // no countdown for an infinite test
+        e.tick(0); // the first tick must not clock-finish the test
+        assert_eq!(e.state(), State::Running);
+        e.tick(600_000); // ten minutes later: still running
+        assert_eq!(e.state(), State::Running);
+        e.bail(600_000); // bail out ends it with a normal result
+        assert_eq!(e.state(), State::Finished);
+        assert!(!e.result().failed);
+    }
+
+    #[test]
+    fn sync_config_applies_freedom_mode_mid_test() {
+        let mut e = engine_with(&["the", "cat"], words_cfg(2));
+        e.type_char('t', 0);
+        e.type_char('h', 100);
+        e.type_char('e', 200);
+        e.type_char(' ', 300); // commit "the" (correct)
+        e.backspace(false, 400); // prev correct, freedom off -> blocked
+        assert_eq!(e.active, 1);
+        let mut cfg = e.config.clone();
+        cfg.freedom_mode = true;
+        e.sync_config(cfg); // palette toggle mid-test
+        e.backspace(false, 500); // now allowed without a restart
+        assert_eq!(e.active, 0);
+    }
+
+    #[test]
+    fn hide_extra_letters_extra_still_fails_master() {
+        let mut c = words_cfg(2);
+        c.hide_extra_letters = true;
+        c.difficulty = Difficulty::Master;
+        let mut e = engine_with(&["the", "cat"], c);
+        type_str(&mut e, "thex", 0); // the extra letter is an incorrect key
         assert_eq!(e.state(), State::Failed);
     }
 }

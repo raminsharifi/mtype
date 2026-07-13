@@ -102,15 +102,32 @@ pub fn previous_best(history: &[StoredResult], r: &TestResult, difficulty: &str)
 
 /// Resolve a pace-caret speed once per test so rendering never touches disk.
 pub fn pace_wpm(config: &Config) -> Option<f64> {
+    pace_wpm_from(&load_history(), config)
+}
+
+/// Pure pace resolver (history in, speed out) so the filter is testable.
+/// The match uses the same category key as `category_matches` / upstream's
+/// `getLocalPB`: mode, mode2, punctuation, numbers, language, and difficulty -
+/// a time-15 PB must never pace a time-60 test. mode2 is only predictable
+/// before the test starts for time/words/practice (a quote's id is picked at
+/// generation time), so the other modes match on mode alone.
+fn pace_wpm_from(history: &[StoredResult], config: &Config) -> Option<f64> {
     if config.pace_caret == PaceCaret::Off {
         return None;
     }
-    let history = load_history();
+    let mode2 = match config.mode {
+        Mode::Time => Some(config.time.to_string()),
+        Mode::Words => Some(config.words.to_string()),
+        Mode::Practice => Some(config.practice_mode.as_str().to_string()),
+        Mode::Quote | Mode::Zen | Mode::Custom => None,
+    };
     let matching = |result: &&StoredResult| {
         result.mode == config.mode.as_str()
+            && mode2.as_deref().is_none_or(|mode2| result.mode2 == mode2)
             && result.language == config.language
             && result.punctuation == config.punctuation
             && result.numbers == config.numbers
+            && result.difficulty == config.difficulty.as_str()
     };
     match config.pace_caret {
         PaceCaret::Off => None,
@@ -595,6 +612,37 @@ mod tests {
         let history = vec![mk_stored(100.0, "time", "60", 0)];
         let other = mk_result(50.0, Mode::Time, "30");
         assert_eq!(previous_best(&history, &other, "normal"), None);
+    }
+
+    #[test]
+    fn pace_sources_filter_by_mode2() {
+        use crate::config::{Config, Difficulty, PaceCaret};
+        // a fast time-15 burst must never pace a time-60 test
+        let history = vec![
+            mk_stored(130.0, "time", "15", 0),
+            mk_stored(90.0, "time", "60", 1),
+            mk_stored(80.0, "time", "60", 2),
+        ];
+        let mut config = Config {
+            mode: Mode::Time,
+            time: 60,
+            pace_caret: PaceCaret::Pb,
+            ..Config::default()
+        };
+        assert_eq!(pace_wpm_from(&history, &config), Some(90.0));
+        config.time = 15;
+        assert_eq!(pace_wpm_from(&history, &config), Some(130.0));
+
+        config.time = 60;
+        config.pace_caret = PaceCaret::Average;
+        assert_eq!(pace_wpm_from(&history, &config), Some(85.0));
+        config.pace_caret = PaceCaret::Last;
+        assert_eq!(pace_wpm_from(&history, &config), Some(80.0));
+
+        // difficulty is part of the category too: no expert history -> no pace
+        config.pace_caret = PaceCaret::Pb;
+        config.difficulty = Difficulty::Expert;
+        assert_eq!(pace_wpm_from(&history, &config), None);
     }
 
     #[test]

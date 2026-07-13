@@ -81,6 +81,7 @@ function render() {
 
 function renderOverview() {
   const o = state.data.overview;
+  const unit = state.data.speedUnit;
   let title = "Your rhythm is becoming visible.";
   let summary = "Each saved test sharpens the next recommendation.";
   if (o.trendPercent >= 2) {
@@ -91,8 +92,10 @@ function renderOverview() {
     summary = "The recent dip is a signal to protect accuracy and review the test mix.";
   } else if (o.recentAccuracy < 96) {
     title = "Accuracy is the next unlock.";
-    summary = `A ${number(o.speedLeak, 1)} wpm raw-to-net gap shows where usable speed is escaping.`;
+    summary = `A ${number(o.speedLeak, 1)} ${unit} raw-to-net gap shows where usable speed is escaping.`;
   }
+  $(".hero-number small").textContent = `recent ${unit}`;
+  $(".leak-number small").textContent = `${unit} raw-to-net gap`;
   $("#heroTitle").textContent = title;
   $("#heroSummary").textContent = summary;
   $("#dataFreshness").textContent = `Updated ${new Date(state.data.generatedAtMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
@@ -147,7 +150,7 @@ function drawHeroChart() {
   const { context, width, height } = prepareCanvas(canvas);
   if (values.length < 2) return;
   const padding = Math.max(28, width * .065);
-  const min = Math.min(...values) * .82;
+  const min = state.data.startGraphsAtZero ? 0 : Math.min(...values) * .82;
   const max = Math.max(...values) * 1.12;
   const x = (index) => padding + index / (values.length - 1) * (width - padding * 2);
   const y = (value) => height - padding - (value - min) / Math.max(1, max - min) * (height - padding * 2);
@@ -215,6 +218,8 @@ function filteredTimeline() {
 function renderProgress() {
   const points = filteredTimeline();
   $("#progressEmpty").hidden = points.length >= 2;
+  $(".legend-net").textContent = `Net ${state.data.speedUnit}`;
+  $(".legend-raw").textContent = `Raw ${state.data.speedUnit}`;
   const trend = state.data.overview.trendPercent;
   $("#trendLabel").textContent = trend == null
     ? "More history needed"
@@ -234,7 +239,9 @@ function drawProgressChart(points) {
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const maxSpeed = Math.max(...points.flatMap((point) => [point.wpm, point.rawWpm]), 10) * 1.12;
-  const minSpeed = Math.max(0, Math.min(...points.map((point) => point.wpm)) * .8);
+  const minSpeed = state.data.startGraphsAtZero
+    ? 0
+    : Math.max(0, Math.min(...points.map((point) => point.wpm)) * .8);
   const x = (index) => padding.left + index / (points.length - 1) * plotWidth;
   const speedY = (value) => padding.top + (1 - (value - minSpeed) / Math.max(1, maxSpeed - minSpeed)) * plotHeight;
   const accuracyY = (value) => padding.top + (1 - (value - 80) / 20) * plotHeight;
@@ -299,7 +306,7 @@ function showChartTooltip(event) {
   tooltip.hidden = false;
   tooltip.style.left = `${nearest.x}px`;
   tooltip.style.top = `${nearest.y}px`;
-  tooltip.innerHTML = `<strong>${number(nearest.point.wpm, 1)} wpm</strong><span>${number(nearest.point.accuracy, 1)}% accuracy</span><span>${escapeHtml(labelMode(nearest.point.mode))} ${escapeHtml(nearest.point.mode2)}</span><span>${shortDate(nearest.point.timestampMs)}</span>`;
+  tooltip.innerHTML = `<strong>${number(nearest.point.wpm, 1)} ${escapeHtml(state.data.speedUnit)}</strong><span>${number(nearest.point.accuracy, 1)}% accuracy</span><span>${escapeHtml(labelMode(nearest.point.mode))} ${escapeHtml(nearest.point.mode2)}</span><span>${shortDate(nearest.point.timestampMs)}</span>`;
 }
 
 function renderInsights() {
