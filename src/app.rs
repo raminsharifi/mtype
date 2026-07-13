@@ -501,10 +501,9 @@ impl App {
         match key.code {
             KeyCode::Char('s') if ctrl => {
                 self.config.custom_text = self.editor_text.trim().to_string();
-                self.config.mode = Mode::Custom;
-                // an explicit in-app edit persists, even after `--custom`
+                // Editing the text changes only the custom target. Mode
+                // selection is explicit in the Test workspace.
                 self.session_overrides.custom_text = false;
-                self.session_overrides.mode = false;
                 self.save_config();
                 self.restart();
             }
@@ -918,12 +917,28 @@ mod tests {
         assert_eq!(app.config.mode, Mode::Practice);
         assert_eq!(app.persistable_config().mode, Mode::Time);
 
-        // explicitly choosing practice in the palette persists it
+        // Changing practice options alone still does not persist the shortcut's
+        // session-only mode switch.
         app.execute(crate::commandline::Action::SetPractice(
             crate::config::PracticeMode::Missed,
             25,
         ));
+        assert_eq!(app.persistable_config().mode, Mode::Time);
+
+        // Only explicitly selecting the mode persists it.
+        app.execute(crate::commandline::Action::SetMode(Mode::Practice));
         assert_eq!(app.persistable_config().mode, Mode::Practice);
+    }
+
+    #[test]
+    fn editing_custom_text_does_not_switch_modes() {
+        let mut app = App::new(Config::default());
+        assert_eq!(app.config.mode, Mode::Time);
+        app.screen = Screen::Editor;
+        app.editor_text = "alpha beta".to_string();
+        app.on_key_editor(key(KeyCode::Char('s')), true);
+        assert_eq!(app.config.custom_text, "alpha beta");
+        assert_eq!(app.config.mode, Mode::Time);
     }
 
     /// Non-restarting palette toggles must reach the running engine

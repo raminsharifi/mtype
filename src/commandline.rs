@@ -135,7 +135,13 @@ impl Action {
             | Action::SetQuoteLengthAll
             | Action::SetQuoteLength(_)
             | Action::SetLanguage(_)
-            | Action::ToggleField(BoolField::Punctuation | BoolField::Numbers) => ConfigTab::Test,
+            | Action::EditCustomText
+            | Action::ToggleField(
+                BoolField::Punctuation
+                | BoolField::Numbers
+                | BoolField::BritishEnglish
+                | BoolField::RepeatQuotes,
+            ) => ConfigTab::Test,
             Action::SetStopOnError(_)
             | Action::SetConfidence(_)
             | Action::SetQuickRestart(_)
@@ -145,11 +151,9 @@ impl Action {
                 BoolField::FreedomMode
                 | BoolField::BlindMode
                 | BoolField::LazyMode
-                | BoolField::BritishEnglish
                 | BoolField::HideExtraLetters
                 | BoolField::StrictSpace
-                | BoolField::QuickEnd
-                | BoolField::RepeatQuotes,
+                | BoolField::QuickEnd,
             ) => ConfigTab::Behavior,
             Action::SetCaret(_)
             | Action::SetSmoothCaret(_)
@@ -178,11 +182,9 @@ impl Action {
                 | BoolField::ShowOutOfFocusWarning
                 | BoolField::CapsLockWarning,
             ) => ConfigTab::Feedback,
-            Action::ViewStats
-            | Action::EditCustomText
-            | Action::SavePreset(_)
-            | Action::LoadPreset(_)
-            | Action::Quit => ConfigTab::System,
+            Action::ViewStats | Action::SavePreset(_) | Action::LoadPreset(_) | Action::Quit => {
+                ConfigTab::System
+            }
         }
     }
 
@@ -249,22 +251,13 @@ impl Action {
     pub fn clear_session_overrides(&self, o: &mut SessionOverrides) {
         match self {
             Action::SetMode(_) => o.mode = false,
-            Action::SetTime(_) => {
-                o.time = false;
-                o.mode = false;
-            }
-            Action::SetWords(_) => {
-                o.words = false;
-                o.mode = false;
-            }
+            Action::SetTime(_) => o.time = false,
+            Action::SetWords(_) => o.words = false,
             Action::SetPractice(_, _) => {
-                o.mode = false;
                 o.practice_mode = false;
                 o.practice_word_count = false;
             }
             Action::SetDifficulty(_) => o.difficulty = false,
-            // these switch to quote mode as a side effect
-            Action::SetQuoteLengthAll | Action::SetQuoteLength(_) => o.mode = false,
             Action::ToggleField(BoolField::Punctuation) => o.punctuation = false,
             Action::ToggleField(BoolField::Numbers) => o.numbers = false,
             Action::SetLanguage(_) => o.language = false,
@@ -284,16 +277,13 @@ impl Action {
             }
             Action::SetTime(t) => {
                 c.time = *t;
-                c.mode = Mode::Time;
                 Outcome::Restart
             }
             Action::SetWords(w) => {
                 c.words = *w;
-                c.mode = Mode::Words;
                 Outcome::Restart
             }
             Action::SetPractice(mode, words) => {
-                c.mode = Mode::Practice;
                 c.practice_mode = *mode;
                 c.practice_word_count = *words;
                 Outcome::Restart
@@ -304,14 +294,12 @@ impl Action {
             }
             Action::SetQuoteLengthAll => {
                 c.quote_length = QuoteLengthBand::ALL.to_vec();
-                c.mode = Mode::Quote;
                 // a new band releases the pinned quote so it can take effect
                 c.quote_id = None;
                 Outcome::Restart
             }
             Action::SetQuoteLength(b) => {
                 c.quote_length = vec![*b];
-                c.mode = Mode::Quote;
                 // a new band releases the pinned quote so it can take effect
                 c.quote_id = None;
                 Outcome::Restart
@@ -541,28 +529,17 @@ pub fn all_commands(c: &Config) -> Vec<Command> {
     }
     // time
     for t in [15u32, 30, 60, 120] {
-        let active = if c.mode == Mode::Time && c.time == t {
-            " •"
-        } else {
-            ""
-        };
+        let active = if c.time == t { " •" } else { "" };
         push(format!("time > {t}{active}"), Action::SetTime(t));
     }
     // words
     for w in [10u32, 25, 50, 100] {
-        let active = if c.mode == Mode::Words && c.words == w {
-            " •"
-        } else {
-            ""
-        };
+        let active = if c.words == w { " •" } else { "" };
         push(format!("words > {w}{active}"), Action::SetWords(w));
     }
     for mode in PracticeMode::ALL {
         for words in [10u32, 25, 50, 100] {
-            let active = if c.mode == Mode::Practice
-                && c.practice_mode == *mode
-                && c.practice_word_count == words
-            {
+            let active = if c.practice_mode == *mode && c.practice_word_count == words {
                 " •"
             } else {
                 ""
@@ -929,6 +906,58 @@ pub struct CommandLine {
     pub commands: Vec<Command>,
     pub tab: ConfigTab,
     pub group: Option<&'static str>,
+    mode: Mode,
+}
+
+/// Test controls shared by every mode stay at the top. Everything after them
+/// is relevant only to the active mode, so changing a value can never select a
+/// different test type as a side effect.
+fn test_groups(mode: Mode) -> &'static [&'static str] {
+    match mode {
+        Mode::Time => &[
+            "mode",
+            "british english",
+            "language",
+            "time",
+            "difficulty",
+            "punctuation",
+            "numbers",
+        ],
+        Mode::Words => &[
+            "mode",
+            "british english",
+            "language",
+            "words",
+            "difficulty",
+            "punctuation",
+            "numbers",
+        ],
+        Mode::Quote => &[
+            "mode",
+            "british english",
+            "language",
+            "quote length",
+            "difficulty",
+            "repeat quotes",
+        ],
+        Mode::Zen => &["mode", "british english", "language"],
+        Mode::Custom => &[
+            "mode",
+            "british english",
+            "language",
+            "custom text",
+            "difficulty",
+        ],
+        Mode::Practice => &[
+            "mode",
+            "british english",
+            "language",
+            "practice",
+            "difficulty",
+            "punctuation",
+            "numbers",
+        ],
+    }
 }
 
 impl CommandLine {
@@ -939,6 +968,7 @@ impl CommandLine {
             commands: all_commands(config),
             tab: ConfigTab::Current,
             group: None,
+            mode: config.mode,
         }
     }
 
@@ -946,10 +976,14 @@ impl CommandLine {
         if self.query.is_empty() && self.group.is_none() {
             return Vec::new();
         }
+        let visible_groups = self.groups();
         self.commands
             .iter()
             .enumerate()
             .filter(|(_, cmd)| self.tab == ConfigTab::Current || cmd.action.tab() == self.tab)
+            .filter(|(_, cmd)| {
+                self.tab != ConfigTab::Test || visible_groups.contains(&cmd.action.group())
+            })
             .filter(|(_, cmd)| self.group.is_none_or(|group| cmd.action.group() == group))
             .filter(|(_, cmd)| fuzzy_match(&cmd.label, &self.query))
             .map(|(i, _)| i)
@@ -959,17 +993,7 @@ impl CommandLine {
     pub fn groups(&self) -> Vec<&'static str> {
         let groups: &[&'static str] = match self.tab {
             ConfigTab::Current => &[],
-            ConfigTab::Test => &[
-                "mode",
-                "time",
-                "words",
-                "practice",
-                "quote length",
-                "language",
-                "difficulty",
-                "punctuation",
-                "numbers",
-            ],
+            ConfigTab::Test => test_groups(self.mode),
             ConfigTab::Behavior => &[
                 "stop on error",
                 "confidence mode",
@@ -979,9 +1003,7 @@ impl CommandLine {
                 "freedom mode",
                 "blind mode",
                 "lazy mode",
-                "british english",
                 "hide extra letters",
-                "repeat quotes",
                 "funbox",
             ],
             ConfigTab::Appearance => &[
@@ -1013,7 +1035,7 @@ impl CommandLine {
                 "out of focus warning",
                 "caps lock warning",
             ],
-            ConfigTab::System => &["stats / progress", "custom text", "presets", "quit mtype"],
+            ConfigTab::System => &["stats / progress", "presets", "quit mtype"],
         };
         groups.to_vec()
     }
@@ -1114,6 +1136,7 @@ impl CommandLine {
 
     pub fn refresh(&mut self, config: &Config) {
         self.commands = all_commands(config);
+        self.mode = config.mode;
         let len = if self.tab == ConfigTab::Current && self.query.is_empty() {
             65
         } else if self.query.is_empty() && self.group.is_none() {
@@ -1235,18 +1258,7 @@ fn current_sections(config: &Config) -> Vec<SummarySection> {
     vec![
         SummarySection {
             title: "Test",
-            rows: values(&[
-                "mode",
-                "time",
-                "words",
-                "practice",
-                "quote length",
-                "punctuation",
-                "numbers",
-                "difficulty",
-                "language",
-                "custom text",
-            ]),
+            rows: values(test_groups(config.mode)),
         },
         SummarySection {
             title: "Behavior",
@@ -1254,14 +1266,12 @@ fn current_sections(config: &Config) -> Vec<SummarySection> {
                 "freedom mode",
                 "blind mode",
                 "lazy mode",
-                "british english",
                 "hide extra letters",
                 "strict space",
                 "quick end",
                 "stop on error",
                 "confidence mode",
                 "quick restart",
-                "repeat quotes",
                 "funbox",
             ]),
         },
@@ -1667,14 +1677,42 @@ mod tests {
     }
 
     #[test]
-    fn set_time_switches_mode() {
+    fn mode_specific_settings_do_not_switch_mode() {
         let mut c = Config {
-            mode: Mode::Words,
+            mode: Mode::Zen,
             ..Config::default()
         };
         Action::SetTime(60).apply(&mut c);
-        assert_eq!(c.mode, Mode::Time);
         assert_eq!(c.time, 60);
+        assert_eq!(c.mode, Mode::Zen);
+
+        Action::SetWords(100).apply(&mut c);
+        assert_eq!(c.words, 100);
+        assert_eq!(c.mode, Mode::Zen);
+
+        Action::SetPractice(PracticeMode::Slow, 25).apply(&mut c);
+        assert_eq!(c.practice_mode, PracticeMode::Slow);
+        assert_eq!(c.practice_word_count, 25);
+        assert_eq!(c.mode, Mode::Zen);
+
+        Action::SetQuoteLength(QuoteLengthBand::Short).apply(&mut c);
+        assert_eq!(c.quote_length, vec![QuoteLengthBand::Short]);
+        assert_eq!(c.mode, Mode::Zen);
+    }
+
+    #[test]
+    fn only_mode_selection_clears_the_session_mode_override() {
+        let mut overrides = SessionOverrides {
+            mode: true,
+            time: true,
+            ..SessionOverrides::default()
+        };
+        Action::SetTime(60).clear_session_overrides(&mut overrides);
+        assert!(!overrides.time);
+        assert!(overrides.mode);
+
+        Action::SetMode(Mode::Time).clear_session_overrides(&mut overrides);
+        assert!(!overrides.mode);
     }
 
     #[test]
@@ -1694,7 +1732,12 @@ mod tests {
         cl.select_tab(1);
         let groups = cl.groups();
         assert!(groups.contains(&"mode"));
+        assert!(groups.contains(&"british english"));
         assert!(groups.contains(&"language"));
+        assert!(groups.contains(&"time"));
+        assert!(!groups.contains(&"words"));
+        assert!(!groups.contains(&"practice"));
+        assert!(!groups.contains(&"quote length"));
         assert!(!groups.contains(&"theme"));
         assert!(cl.filtered().is_empty());
 
@@ -1712,6 +1755,11 @@ mod tests {
         let mut cl = CommandLine::new(&c);
         for tab_index in 1..ConfigTab::ALL.len() {
             cl.select_tab(tab_index);
+            if cl.tab == ConfigTab::Test {
+                // Test commands are intentionally mode-dependent and covered
+                // by `test_tab_only_shows_active_mode_settings` below.
+                continue;
+            }
             let groups = cl.groups();
             for command in cl
                 .commands
@@ -1726,6 +1774,116 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_tab_only_shows_active_mode_settings() {
+        let cases: &[(Mode, &[&str])] = &[
+            (
+                Mode::Time,
+                &[
+                    "mode",
+                    "british english",
+                    "language",
+                    "time",
+                    "difficulty",
+                    "punctuation",
+                    "numbers",
+                ],
+            ),
+            (
+                Mode::Words,
+                &[
+                    "mode",
+                    "british english",
+                    "language",
+                    "words",
+                    "difficulty",
+                    "punctuation",
+                    "numbers",
+                ],
+            ),
+            (
+                Mode::Quote,
+                &[
+                    "mode",
+                    "british english",
+                    "language",
+                    "quote length",
+                    "difficulty",
+                    "repeat quotes",
+                ],
+            ),
+            (Mode::Zen, &["mode", "british english", "language"]),
+            (
+                Mode::Custom,
+                &[
+                    "mode",
+                    "british english",
+                    "language",
+                    "custom text",
+                    "difficulty",
+                ],
+            ),
+            (
+                Mode::Practice,
+                &[
+                    "mode",
+                    "british english",
+                    "language",
+                    "practice",
+                    "difficulty",
+                    "punctuation",
+                    "numbers",
+                ],
+            ),
+        ];
+
+        for (mode, expected) in cases {
+            let config = Config {
+                mode: *mode,
+                ..Config::default()
+            };
+            let mut cl = CommandLine::new(&config);
+            cl.select_tab(1);
+            assert_eq!(cl.groups(), *expected, "wrong groups for {mode}");
+
+            for group in cl.groups() {
+                assert!(
+                    cl.commands.iter().any(|command| {
+                        command.action.tab() == ConfigTab::Test && command.action.group() == group
+                    }),
+                    "{group} has no commands in {mode} mode"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_tab_search_hides_inactive_mode_settings() {
+        let mut cl = CommandLine::new(&Config::default()); // time mode
+        cl.select_tab(1);
+        for ch in "words".chars() {
+            cl.push_char(ch);
+        }
+        let filtered = cl.filtered();
+        assert!(filtered
+            .iter()
+            .any(|index| matches!(cl.commands[*index].action, Action::SetMode(Mode::Words))));
+        assert!(filtered
+            .iter()
+            .all(|index| !matches!(cl.commands[*index].action, Action::SetWords(_))));
+
+        // The Current tab remains a global search, but changing the dormant
+        // word count there still cannot change the active mode.
+        cl.select_tab(0);
+        for ch in "words".chars() {
+            cl.push_char(ch);
+        }
+        assert!(cl
+            .filtered()
+            .iter()
+            .any(|index| matches!(cl.commands[*index].action, Action::SetWords(_))));
     }
 
     #[test]

@@ -53,6 +53,37 @@ pub fn render(app: &App, frame: &mut Frame) {
             rect,
         );
     }
+    render_build_revision(app, frame, area);
+}
+
+const BUILD_GIT_HASH: &str = env!("MTYPE_BUILD_GIT_HASH");
+
+fn build_revision_label() -> String {
+    format!("git:{BUILD_GIT_HASH}")
+}
+
+/// Keep the exact build revision visible regardless of the active screen or
+/// overlay. A dirty suffix means the binary includes uncommitted source edits.
+fn render_build_revision(app: &App, frame: &mut Frame, area: Rect) {
+    let label = build_revision_label();
+    let width = UnicodeWidthStr::width(label.as_str()).min(u16::MAX as usize) as u16;
+    if area.height == 0 || width == 0 || area.width < width {
+        return;
+    }
+    let rect = Rect::new(
+        area.right().saturating_sub(width),
+        area.bottom().saturating_sub(1),
+        width,
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            label,
+            Style::default().fg(app.theme.sub).bg(app.theme.bg),
+        ))
+        .alignment(Alignment::Right),
+        rect,
+    );
 }
 
 fn render_editor(app: &App, frame: &mut Frame, area: Rect) {
@@ -624,6 +655,18 @@ mod tests {
             s.push('\n');
         }
         s
+    }
+
+    #[test]
+    fn build_revision_is_pinned_to_the_bottom_right() {
+        let app = App::new(Config::default());
+        let terminal = draw(&app, 80, 24);
+        let text = buffer_text(&terminal);
+        let bottom = text.lines().last().unwrap();
+        assert!(
+            bottom.ends_with(&build_revision_label()),
+            "revision must end the bottom row:\n{bottom}"
+        );
     }
 
     /// Regression: 20/21-column terminals used to panic in content_width
